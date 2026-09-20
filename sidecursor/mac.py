@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import json
-import plistlib
 import threading
 import time
 import queue
-import subprocess
-import tempfile
-from pathlib import Path
 
 try:
     import AppKit
@@ -28,43 +23,6 @@ class MacAdapter:
         Quartz.kCGEventRightMouseDragged,
         Quartz.kCGEventOtherMouseDragged,
     )
-    _CURRENT_HOST_DOMAIN = "@sidecursor-current-host"
-
-    # Keep two-finger scrolling enabled: it is forwarded as a Windows wheel
-    # event.  These are the macOS actions that switch Spaces, expose windows,
-    # open Notification Center, or perform a local zoom/rotate instead.
-    _GESTURE_SHIELD_SETTINGS = (
-        ("com.apple.dock", "showAppExposeGestureEnabled", False),
-        ("com.apple.dock", "showMissionControlGestureEnabled", False),
-        ("com.apple.dock", "showDesktopGestureEnabled", False),
-        ("com.apple.dock", "showLaunchpadGestureEnabled", False),
-        ("NSGlobalDomain", "AppleEnableSwipeNavigateWithScrolls", False),
-        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.threeFingerHorizSwipeGesture", 0),
-        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.fourFingerHorizSwipeGesture", 0),
-        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.threeFingerVertSwipeGesture", 0),
-        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.fourFingerVertSwipeGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerVertSwipeGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadFourFingerVertSwipeGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerHorizSwipeGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadFourFingerHorizSwipeGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadFourFingerPinchGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadFiveFingerPinchGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadTwoFingerDoubleTapGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadTwoFingerFromRightEdgeSwipeGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerTapGesture", 0),
-        ("com.apple.AppleMultitouchTrackpad", "TrackpadRotate", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadThreeFingerVertSwipeGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadFourFingerVertSwipeGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadThreeFingerHorizSwipeGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadFourFingerHorizSwipeGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadFourFingerPinchGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadFiveFingerPinchGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadTwoFingerDoubleTapGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadTwoFingerFromRightEdgeSwipeGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadThreeFingerTapGesture", 0),
-        ("com.apple.driver.AppleBluetoothMultitouch.trackpad", "TrackpadRotate", 0),
-    )
-
     def __init__(self, send_message):
         self.send_message = send_message
         self.forwarding = False
@@ -85,134 +43,34 @@ class MacAdapter:
         self._cursor_thread = None
         self._gesture_shield_lock = threading.RLock()
         self._gesture_shield_active = False
-        self._gesture_state_path = (
-            Path.home() / "Library" / "Application Support" / "SideCursor" / "gesture-shield-state.json"
-        )
-
-    @staticmethod
-    def _read_preference_domain(domain):
-        command = ["defaults"]
-        if domain == MacAdapter._CURRENT_HOST_DOMAIN:
-            command.extend(["-currentHost", "export", "NSGlobalDomain", "-"])
-        else:
-            command.extend(["export", domain, "-"])
-        result = subprocess.run(
-            command, capture_output=True, check=False
-        )
-        if result.returncode:
-            return {}
-        return plistlib.loads(result.stdout)
-
-    @staticmethod
-    def _write_preference(domain, key, value):
-        if isinstance(value, bool):
-            kind, rendered = "-bool", "true" if value else "false"
-        elif isinstance(value, int):
-            kind, rendered = "-int", str(value)
-        elif isinstance(value, float):
-            kind, rendered = "-float", str(value)
-        elif isinstance(value, str):
-            kind, rendered = "-string", value
-        else:
-            raise TypeError(f"unsupported preference value for {domain}:{key}")
-        command = ["defaults"]
-        if domain == MacAdapter._CURRENT_HOST_DOMAIN:
-            command.extend(["-currentHost", "write", "NSGlobalDomain", key])
-        else:
-            command.extend(["write", domain, key])
-        subprocess.run(command + [kind, rendered], check=True)
-
-    @staticmethod
-    def _delete_preference(domain, key):
-        command = ["defaults"]
-        if domain == MacAdapter._CURRENT_HOST_DOMAIN:
-            command.extend(["-currentHost", "delete", "NSGlobalDomain", key])
-        else:
-            command.extend(["delete", domain, key])
-        subprocess.run(command, check=False)
-
-    def _save_gesture_state(self, state):
-        self._gesture_state_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=self._gesture_state_path.parent, delete=False
-        ) as temporary:
-            json.dump(state, temporary)
-            temporary.flush()
-            Path(temporary.name).replace(self._gesture_state_path)
-
-    def _load_gesture_state(self):
-        try:
-            with self._gesture_state_path.open(encoding="utf-8") as state_file:
-                return json.load(state_file)
-        except FileNotFoundError:
-            return None
-
-    @staticmethod
-    def _reload_gesture_services():
-        # Dock owns Mission Control, Show Desktop, Launchpad, and App Expose.
-        # The per-host trackpad preferences are cached by cfprefsd, so restart
-        # it before Dock to apply side-swipe changes without logging out.
-        subprocess.run(["killall", "cfprefsd"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.15)
-        subprocess.run(["killall", "Dock"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def _restore_gesture_state(self, state):
-        for domain, values in state.get("domains", {}).items():
-            for key, saved in values.items():
-                if saved.get("present"):
-                    self._write_preference(domain, key, saved["value"])
-                else:
-                    self._delete_preference(domain, key)
-        self._reload_gesture_services()
 
     def _enable_gesture_shield(self):
+        """Capture displays while forwarding so macOS cannot run Spaces gestures.
+
+        Event taps and changing Trackpad defaults do not reliably preempt the
+        system-wide three/four-finger gesture.  Core Graphics display capture
+        is the public exclusive-input mechanism for that case.  NoFill keeps
+        the existing desktop visible, and release restores normal ownership.
+        """
         with self._gesture_shield_lock:
             if self._gesture_shield_active:
                 return
-            try:
-                domains = {}
-                for domain, key, _disabled_value in self._GESTURE_SHIELD_SETTINGS:
-                    if domain not in domains:
-                        domains[domain] = self._read_preference_domain(domain)
-                state = {"domains": {}}
-                for domain, key, _disabled_value in self._GESTURE_SHIELD_SETTINGS:
-                    saved = state["domains"].setdefault(domain, {})
-                    if key in domains[domain]:
-                        saved[key] = {"present": True, "value": domains[domain][key]}
-                    else:
-                        saved[key] = {"present": False}
-                # Persist before changing preferences so the next SideCursor
-                # launch can restore them even if this process is terminated.
-                self._save_gesture_state(state)
-                for domain, key, disabled_value in self._GESTURE_SHIELD_SETTINGS:
-                    self._write_preference(domain, key, disabled_value)
-                self._reload_gesture_services()
-                self._gesture_shield_active = True
-                print("Mac gesture shield: ON (two-finger scroll remains enabled)")
-            except Exception as exc:
-                print(f"Mac gesture shield warning: {exc}")
+            result = Quartz.CGCaptureAllDisplaysWithOptions(Quartz.kCGCaptureNoFill)
+            if result:
+                print(f"Mac gesture guard warning: display capture returned CGError {result}")
+                return
+            self._gesture_shield_active = True
+            print("Mac gesture guard: ON (exclusive display capture)")
 
-    def _disable_gesture_shield(self, recover=False):
+    def _disable_gesture_shield(self):
         with self._gesture_shield_lock:
-            if not self._gesture_shield_active and not recover:
+            if not self._gesture_shield_active:
                 return
-            state = self._load_gesture_state()
-            if state is None:
-                self._gesture_shield_active = False
-                return
-            try:
-                self._restore_gesture_state(state)
-                self._gesture_state_path.unlink(missing_ok=True)
-                print("Mac gesture shield: OFF (your gesture settings restored)")
-            except Exception as exc:
-                print(f"Mac gesture shield restore warning: {exc}")
-            finally:
-                self._gesture_shield_active = False
-
-    def _recover_gesture_shield(self):
-        if self._gesture_state_path.exists():
-            print("Restoring trackpad gestures left disabled by an interrupted SideCursor session")
-            self._disable_gesture_shield(recover=True)
+            result = Quartz.CGReleaseAllDisplays()
+            if result:
+                print(f"Mac gesture guard warning: display release returned CGError {result}")
+            self._gesture_shield_active = False
+            print("Mac gesture guard: OFF")
 
     @staticmethod
     def _active_display_bounds():
@@ -288,7 +146,6 @@ class MacAdapter:
         if self._cursor_captured:
             return
         self._captured_display = display
-        self._enable_gesture_shield()
         workspace = AppKit.NSWorkspace.sharedWorkspace()
         current_app = AppKit.NSRunningApplication.currentApplication()
         frontmost = workspace.frontmostApplication()
@@ -304,6 +161,7 @@ class MacAdapter:
             self._ns_cursor_hidden = True
 
         self._run_on_main_thread(activate_and_hide)
+        self._enable_gesture_shield()
         Quartz.CGAssociateMouseAndMouseCursorPosition(False)
         hide_result = Quartz.CGDisplayHideCursor(display)
         if hide_result == 0:
@@ -497,7 +355,6 @@ class MacAdapter:
         if not capture:
             threading.Thread(target=self._clipboard_loop, args=(clipboard_callback,), name="sidecursor-mac-clipboard", daemon=True).start()
             return
-        self._recover_gesture_shield()
         self._cursor_thread = threading.Thread(target=self._cursor_worker, name="sidecursor-mac-cursor", daemon=True)
         self._cursor_thread.start()
         mask = ((1 << Quartz.kCGEventMouseMoved) | (1 << Quartz.kCGEventLeftMouseDragged) |
