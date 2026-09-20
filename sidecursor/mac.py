@@ -28,6 +28,7 @@ class MacAdapter:
         Quartz.kCGEventRightMouseDragged,
         Quartz.kCGEventOtherMouseDragged,
     )
+    _CURRENT_HOST_DOMAIN = "@sidecursor-current-host"
 
     # Keep two-finger scrolling enabled: it is forwarded as a Windows wheel
     # event.  These are the macOS actions that switch Spaces, expose windows,
@@ -37,6 +38,11 @@ class MacAdapter:
         ("com.apple.dock", "showMissionControlGestureEnabled", False),
         ("com.apple.dock", "showDesktopGestureEnabled", False),
         ("com.apple.dock", "showLaunchpadGestureEnabled", False),
+        ("NSGlobalDomain", "AppleEnableSwipeNavigateWithScrolls", False),
+        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.threeFingerHorizSwipeGesture", 0),
+        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.fourFingerHorizSwipeGesture", 0),
+        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.threeFingerVertSwipeGesture", 0),
+        (_CURRENT_HOST_DOMAIN, "com.apple.trackpad.fourFingerVertSwipeGesture", 0),
         ("com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerVertSwipeGesture", 0),
         ("com.apple.AppleMultitouchTrackpad", "TrackpadFourFingerVertSwipeGesture", 0),
         ("com.apple.AppleMultitouchTrackpad", "TrackpadThreeFingerHorizSwipeGesture", 0),
@@ -85,8 +91,13 @@ class MacAdapter:
 
     @staticmethod
     def _read_preference_domain(domain):
+        command = ["defaults"]
+        if domain == MacAdapter._CURRENT_HOST_DOMAIN:
+            command.extend(["-currentHost", "export", "NSGlobalDomain", "-"])
+        else:
+            command.extend(["export", domain, "-"])
         result = subprocess.run(
-            ["defaults", "export", domain, "-"], capture_output=True, check=False
+            command, capture_output=True, check=False
         )
         if result.returncode:
             return {}
@@ -104,7 +115,21 @@ class MacAdapter:
             kind, rendered = "-string", value
         else:
             raise TypeError(f"unsupported preference value for {domain}:{key}")
-        subprocess.run(["defaults", "write", domain, key, kind, rendered], check=True)
+        command = ["defaults"]
+        if domain == MacAdapter._CURRENT_HOST_DOMAIN:
+            command.extend(["-currentHost", "write", "NSGlobalDomain", key])
+        else:
+            command.extend(["write", domain, key])
+        subprocess.run(command + [kind, rendered], check=True)
+
+    @staticmethod
+    def _delete_preference(domain, key):
+        command = ["defaults"]
+        if domain == MacAdapter._CURRENT_HOST_DOMAIN:
+            command.extend(["-currentHost", "delete", "NSGlobalDomain", key])
+        else:
+            command.extend(["delete", domain, key])
+        subprocess.run(command, check=False)
 
     def _save_gesture_state(self, state):
         self._gesture_state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,9 +148,12 @@ class MacAdapter:
             return None
 
     @staticmethod
-    def _restart_dock():
+    def _reload_gesture_services():
         # Dock owns Mission Control, Show Desktop, Launchpad, and App Expose.
-        # It reloads these per-user settings when restarted.
+        # The per-host trackpad preferences are cached by cfprefsd, so restart
+        # it before Dock to apply side-swipe changes without logging out.
+        subprocess.run(["killall", "cfprefsd"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.15)
         subprocess.run(["killall", "Dock"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def _restore_gesture_state(self, state):
@@ -134,8 +162,8 @@ class MacAdapter:
                 if saved.get("present"):
                     self._write_preference(domain, key, saved["value"])
                 else:
-                    subprocess.run(["defaults", "delete", domain, key], check=False)
-        self._restart_dock()
+                    self._delete_preference(domain, key)
+        self._reload_gesture_services()
 
     def _enable_gesture_shield(self):
         with self._gesture_shield_lock:
@@ -158,7 +186,7 @@ class MacAdapter:
                 self._save_gesture_state(state)
                 for domain, key, disabled_value in self._GESTURE_SHIELD_SETTINGS:
                     self._write_preference(domain, key, disabled_value)
-                self._restart_dock()
+                self._reload_gesture_services()
                 self._gesture_shield_active = True
                 print("Mac gesture shield: ON (two-finger scroll remains enabled)")
             except Exception as exc:
