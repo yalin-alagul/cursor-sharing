@@ -1,0 +1,6 @@
+cryptography>=42.0
+pystray>=0.19.5
+Pillow>=10.0
+pyobjc-framework-Quartz>=10.0; platform_system == "Darwin"
+pyobjc-framework-Cocoa>=10.0; platform_system == "Darwin"
+pyobjc-framework-IOBluetooth>=10.0; platform_system == "Darwin"
