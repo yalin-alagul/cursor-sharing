@@ -41,36 +41,6 @@ class MacAdapter:
         self._ns_cursor_hidden = False
         self._cursor_actions = queue.Queue()
         self._cursor_thread = None
-        self._gesture_shield_lock = threading.RLock()
-        self._gesture_shield_active = False
-
-    def _enable_gesture_shield(self):
-        """Capture displays while forwarding so macOS cannot run Spaces gestures.
-
-        Event taps and changing Trackpad defaults do not reliably preempt the
-        system-wide three/four-finger gesture.  Core Graphics display capture
-        is the public exclusive-input mechanism for that case.  NoFill keeps
-        the existing desktop visible, and release restores normal ownership.
-        """
-        with self._gesture_shield_lock:
-            if self._gesture_shield_active:
-                return
-            result = Quartz.CGCaptureAllDisplaysWithOptions(Quartz.kCGCaptureNoFill)
-            if result:
-                print(f"Mac gesture guard warning: display capture returned CGError {result}")
-                return
-            self._gesture_shield_active = True
-            print("Mac gesture guard: ON (exclusive display capture)")
-
-    def _disable_gesture_shield(self):
-        with self._gesture_shield_lock:
-            if not self._gesture_shield_active:
-                return
-            result = Quartz.CGReleaseAllDisplays()
-            if result:
-                print(f"Mac gesture guard warning: display release returned CGError {result}")
-            self._gesture_shield_active = False
-            print("Mac gesture guard: OFF")
 
     @staticmethod
     def _active_display_bounds():
@@ -161,7 +131,6 @@ class MacAdapter:
             self._ns_cursor_hidden = True
 
         self._run_on_main_thread(activate_and_hide)
-        self._enable_gesture_shield()
         Quartz.CGAssociateMouseAndMouseCursorPosition(False)
         hide_result = Quartz.CGDisplayHideCursor(display)
         if hide_result == 0:
@@ -212,7 +181,6 @@ class MacAdapter:
                 self._cg_hide_count += 1
 
     def _release_cursor(self):
-        self._disable_gesture_shield()
         if not self._cursor_captured:
             return
         display = self._captured_display or Quartz.CGMainDisplayID()
@@ -421,7 +389,6 @@ class MacAdapter:
         deadline = time.monotonic() + 0.5
         while self._cursor_captured and time.monotonic() < deadline:
             time.sleep(0.01)
-        self._disable_gesture_shield()
         self._cursor_actions.put(("stop", None))
         self._stop.set()
         if self._tap:
