@@ -254,7 +254,7 @@ private struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     TextField("Windows Bluetooth address", text: bluetoothAddressBinding)
-                    Text("First pair both computers in macOS and Windows, then select Bluetooth and start the Windows app. The Mac discovers the currently advertised SideCursor RFCOMM service by UUID; no manual channel or legacy Python channel is used.")
+                    Text("Enter the paired Windows radio address, for example 54:14:F3:78:6E:D6 — not the SideCursor service UUID. The Mac discovers the advertised RFCOMM service and channel automatically.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

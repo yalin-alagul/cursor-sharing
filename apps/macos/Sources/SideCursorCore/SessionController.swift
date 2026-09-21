@@ -133,7 +133,6 @@ public final class SessionController: ObservableObject {
             return
         }
         startInputCapture()
-        guard inputTap.isRunning else { return }
 
         stopTransport(transitionToDisconnected: false)
         do {
@@ -289,9 +288,16 @@ public final class SessionController: ObservableObject {
     }
 
     private func startBluetooth(secret: Data) {
-        let address = configuration.bluetoothPeerAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !address.isEmpty else {
+        let rawAddress = configuration.bluetoothPeerAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawAddress.isEmpty else {
             transportFailed(TransportError.bluetoothUnavailable("enter the paired Windows Bluetooth address first"))
+            return
+        }
+        guard let address = BluetoothDeviceAddress.normalize(rawAddress) else {
+            let detail = rawAddress.caseInsensitiveCompare(SideCursorBluetoothService.uuidString) == .orderedSame
+                ? "the SideCursor service UUID is not a device address; enter the paired Windows address such as 54:14:F3:78:6E:D6"
+                : "enter the paired Windows Bluetooth address in the form 54:14:F3:78:6E:D6"
+            transportFailed(TransportError.bluetoothUnavailable(detail))
             return
         }
         isListening = false
@@ -317,7 +323,9 @@ public final class SessionController: ObservableObject {
                             try self.machine.transition(.peerReady)
                             self.phase = self.machine.phase
                             self.synchronizeGate()
-                            self.statusMessage = "Paired Windows companion is ready."
+                            self.statusMessage = self.inputTap.isRunning
+                                ? "Paired Windows companion is ready."
+                                : "Paired Windows companion is ready; grant Accessibility to enable input sharing."
                             self.startPingTimer()
                         } catch {
                             self.recover(reason: error.localizedDescription)
