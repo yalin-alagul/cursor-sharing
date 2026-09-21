@@ -17,11 +17,19 @@ public sealed record PointerInjectionResult(bool ReturnRequested, double ReturnY
     public static PointerInjectionResult Continue { get; } = new(false, 0);
 }
 
+/// <summary>
+/// A held key is identified by its virtual key together with its extended
+/// flag. Keys such as the main and keypad variants of Enter share a virtual
+/// key but differ in scan code, so tracking the extended flag lets ReleaseAll
+/// release exactly the key that was pressed.
+/// </summary>
+internal readonly record struct PressedKey(ushort Vk, bool Extended);
+
 public sealed class WindowsInputInjector
 {
     private readonly object _gate = new();
     private readonly RelativeMotionMapper _motionMapper = new();
-    private readonly HashSet<ushort> _pressedKeys = [];
+    private readonly HashSet<PressedKey> _pressedKeys = [];
     private readonly HashSet<string> _pressedButtons = new(StringComparer.Ordinal);
     private DisplayDescriptor? _targetDisplay;
     private int _returnEdgeInsetPixels;
@@ -56,10 +64,7 @@ public sealed class WindowsInputInjector
             // edge and a tiny leftward nudge sends control straight back.
             var entryInset = Math.Max(2, configuration.ReturnEdgeInsetPixels + 6);
             var entry = target.Bounds.EntryPoint(normalizedY, insetPixels: entryInset);
-            if (!NativeMethods.SetCursorPos(entry.X, entry.Y))
-            {
-                NativeMethods.ThrowLastError("Unable to position the Windows pointer at the target display edge");
-            }
+            SetCursorPosOrThrow(entry.X, entry.Y, "Unable to position the Windows pointer at the target display edge");
 
             _targetDisplay = target;
             _returnEdgeInsetPixels = configuration.ReturnEdgeInsetPixels;
@@ -86,10 +91,7 @@ public sealed class WindowsInputInjector
             if (returnPlan.RequestReturn)
             {
                 var boundary = returnPlan.ClampCursorTo.GetValueOrDefault();
-                if (!NativeMethods.SetCursorPos(boundary.X, boundary.Y))
-                {
-                    NativeMethods.ThrowLastError("Unable to keep the Windows pointer inside the selected return edge");
-                }
+                SetCursorPosOrThrow(boundary.X, boundary.Y, "Unable to keep the Windows pointer inside the selected return edge");
                 return RequestReturn(target, boundary);
             }
 
@@ -159,13 +161,14 @@ public sealed class WindowsInputInjector
         {
             _ = RequireTarget();
             SendKey(virtualKey, down, extended);
+            var pressedKey = new PressedKey(virtualKey, extended);
             if (down)
             {
-                _pressedKeys.Add(virtualKey);
+                _pressedKeys.Add(pressedKey);
             }
             else
             {
-                _pressedKeys.Remove(virtualKey);
+                _pressedKeys.Remove(pressedKey);
             }
         }
     }
@@ -210,7 +213,7 @@ public sealed class WindowsInputInjector
             {
                 try
                 {
-                    SendKey(key, down: false, IsExtendedKey(key));
+                    SendKey(key.Vk, down: false, key.Extended);
                 }
                 catch (Exception exception)
                 {
@@ -275,10 +278,20 @@ public sealed class WindowsInputInjector
     {
         if (!NativeMethods.GetCursorPos(out var point))
         {
-            NativeMethods.ThrowLastError("Unable to read the Windows pointer position");
+            throw new InputInjectionException(
+                "Unable to read the Windows pointer position",
+                new Win32Exception(Marshal.GetLastWin32Error()));
         }
 
         return new PixelPoint(point.X, point.Y);
+    }
+
+    private static void SetCursorPosOrThrow(int x, int y, string operation)
+    {
+        if (!NativeMethods.SetCursorPos(x, y))
+        {
+            throw new InputInjectionException(operation, new Win32Exception(Marshal.GetLastWin32Error()));
+        }
     }
 
     private PointerInjectionResult RequestReturn(DisplayDescriptor target, PixelPoint? pointer = null)

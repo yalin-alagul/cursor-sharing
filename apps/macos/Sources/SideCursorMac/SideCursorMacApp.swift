@@ -127,7 +127,7 @@ final class SideCursorAppModel: ObservableObject {
     func returnControlToMac() {
         switch session.phase {
         case .entering, .remote, .returning, .recovering:
-            session.toggleRemoteMode()
+            session.returnToLocalControl()
         case .disconnected, .connecting, .ready:
             break
         }

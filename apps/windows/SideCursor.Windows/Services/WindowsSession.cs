@@ -20,6 +20,7 @@ public sealed class WindowsSession : IDisposable
     private string? _returnRequestId;
     private int _stopped;
     private int _disposed;
+    private DateTimeOffset _lastPongAtUtc = DateTimeOffset.UtcNow;
 
     public WindowsSession(
         SideCursorConfig configuration,
@@ -97,7 +98,10 @@ public sealed class WindowsSession : IDisposable
 
         try
         {
-            await SendAsync(new { type = "release_all", reason }, CancellationToken.None).ConfigureAwait(false);
+            // Bound the release-all send so a hung peer with a full send buffer
+            // can never block application exit indefinitely.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await SendAsync(new { type = "release_all", reason }, timeout.Token).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException or OperationCanceledException)
         {
@@ -180,12 +184,17 @@ public sealed class WindowsSession : IDisposable
             var sourceWidth = ReadPositiveInt(source, "width");
             var sourceHeight = ReadPositiveInt(source, "height");
             var target = _input.EnterRemote(_configuration, sourceDisplay, sourceWidth, sourceHeight, normalizedY);
-            await SendAsync(new { type = "enter_ack", id }, cancellationToken).ConfigureAwait(false);
+            // Confirm the session reached Remote *before* acknowledging entry.
+            // If the state slipped (a concurrent shutdown or local return), the
+            // Mac must never be told entry succeeded, otherwise it would capture
+            // its cursor and forward input to a Windows side that is discarding
+            // it, leaving the Mac stuck suppressing input.
             if (!_state.MarkRemote($"Controlling {target.Label}"))
             {
                 throw new InputInjectionException("Windows session state changed before remote entry could complete.");
             }
 
+            await SendAsync(new { type = "enter_ack", id }, cancellationToken).ConfigureAwait(false);
             _diagnostics.Add($"Remote input acknowledged for {target.Label}.");
         }
         catch (Exception exception) when (exception is InputInjectionException or InvalidOperationException or ProtocolViolationException)
@@ -338,6 +347,7 @@ public sealed class WindowsSession : IDisposable
     private void HandlePong(JsonElement message)
     {
         var sentAtMs = ReadInt64(message, "sentAtMs");
+        _lastPongAtUtc = DateTimeOffset.UtcNow;
         var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - sentAtMs;
         if (elapsed is >= 0 and <= 60_000)
         {
@@ -371,6 +381,19 @@ public sealed class WindowsSession : IDisposable
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
+            // Mirror the Mac's dead-peer watchdog. If the Mac stops answering
+            // while it owns Windows input, Windows must release injected keys
+            // and buttons and return to a retryable state instead of holding
+            // them down forever.
+            if (_state.Snapshot.State is SessionState.Remote or SessionState.Entering or SessionState.Returning &&
+                DateTimeOffset.UtcNow - _lastPongAtUtc > TimeSpan.FromSeconds(6))
+            {
+                ReleaseInputSafely("peer stopped responding to keepalive");
+                _state.BeginRecovery("Peer stopped responding to keepalive");
+                _sessionCancellation.Cancel();
+                throw new IOException("The paired Mac stopped responding to keepalive while Windows was being controlled.");
+            }
+
             var sentAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             await SendAsync(new { type = "ping", sentAtMs }, cancellationToken).ConfigureAwait(false);
         }

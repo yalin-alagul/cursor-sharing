@@ -202,12 +202,17 @@ public final class InputEventTap {
     public func stop() {
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: false)
+        // Fully release the mach port so the callback can never fire against a
+        // deallocated owner after teardown begins.
+        CFMachPortInvalidate(tap)
         if let runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         self.tap = nil
         runLoopSource = nil
         isFiltering = false
+        commandKeyCodes.removeAll()
+        lastMotionLocation = nil
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -321,6 +326,12 @@ public final class InputEventTap {
     }
 
     private func handleKey(_ type: CGEventType, event: CGEvent, snapshot: InputGateSnapshot) -> Unmanaged<CGEvent>? {
+        if snapshot.mode != .remote, !commandKeyCodes.isEmpty {
+            // Abandon any command key whose key-up never arrived. Otherwise a
+            // later remote session could swallow an unrelated key-up and leave
+            // that key stuck down on Windows until a full release-all.
+            commandKeyCodes.removeAll()
+        }
         switch snapshot.mode {
         case .remote:
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
@@ -345,7 +356,10 @@ public final class InputEventTap {
             }
             let down: Bool
             if type == .flagsChanged {
-                down = event.flags.contains(mapping.modifierMask ?? [])
+                // A modifier's pressed state is read from its own flag bit. A
+                // key without a modifier mask must not be reported as pressed
+                // just because the empty flag set is always "contained".
+                down = mapping.modifierMask.map { event.flags.contains($0) } ?? false
             } else {
                 down = type == .keyDown
             }
