@@ -189,10 +189,22 @@ public struct EdgeRoute: Equatable {
     }
 
     public func crossesFromInside(_ point: CGPoint, deltaX: Int64, threshold: Double = 2) -> Bool {
-        guard display.bounds.contains(point), deltaX > 0 else { return false }
+        guard deltaX > 0,
+              point.y >= display.bounds.y,
+              point.y < display.bounds.maxY
+        else { return false }
+
+        // A pointer can be reported one or more pixels beyond a display's
+        // Quartz bounds on the event that crosses into an adjacent (or empty)
+        // virtual-desktop region. The old `contains(point)` guard dropped that
+        // exact event, so a valid right-edge handoff never began. Use the
+        // event delta to prove that the prior pointer position was inside the
+        // configured source display instead.
+        let priorX = point.x - CGFloat(deltaX)
+        guard priorX >= display.bounds.x, priorX < display.bounds.maxX else { return false }
         switch edge {
         case .right:
-            return point.x >= display.bounds.maxX - threshold
+            return point.x >= display.bounds.maxX - max(0, threshold)
         }
     }
 

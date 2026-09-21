@@ -35,8 +35,10 @@ final class NativeRecoveryTests: XCTestCase {
         )
         let route = EdgeRoute(display: display)
         XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1732, y: -600), deltaX: 1))
+        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1733, y: -600), deltaX: 1))
         XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1732, y: -600), deltaX: -1))
         XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1200, y: -600), deltaX: 10))
+        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1735, y: -600), deltaX: 1))
     }
 
     func testSavedDisplayRouteDoesNotFallBackWhenThatDisplayIsMissing() {
