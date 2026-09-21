@@ -26,6 +26,7 @@ public sealed class WindowsInputInjector
     private DisplayDescriptor? _targetDisplay;
     private int _returnEdgeInsetPixels;
     private bool _returnRequested;
+    private DateTime _lastTargetCheckUtc = DateTime.MinValue;
 
     public bool IsRemote
     {
@@ -50,7 +51,11 @@ public sealed class WindowsInputInjector
         {
             var target = DisplayCatalog.ResolveTarget(configuration);
             _motionMapper.Configure(sourceWidth, sourceHeight, target.Bounds, configuration.PointerCalibration);
-            var entry = target.Bounds.EntryPoint(normalizedY, insetPixels: 2);
+            // Keep a few pixels between the entry point and the return
+            // boundary; otherwise the pointer starts essentially on the return
+            // edge and a tiny leftward nudge sends control straight back.
+            var entryInset = Math.Max(2, configuration.ReturnEdgeInsetPixels + 6);
+            var entry = target.Bounds.EntryPoint(normalizedY, insetPixels: entryInset);
             if (!NativeMethods.SetCursorPos(entry.X, entry.Y))
             {
                 NativeMethods.ThrowLastError("Unable to position the Windows pointer at the target display edge");
@@ -68,7 +73,13 @@ public sealed class WindowsInputInjector
         lock (_gate)
         {
             var target = RequireTarget();
-            VerifyTargetStillPresent(target);
+            // Enumerating monitors on every pointer sample made remote movement
+            // laggy; re-validate the target display at most once per second.
+            if (DateTime.UtcNow - _lastTargetCheckUtc > TimeSpan.FromSeconds(1))
+            {
+                _lastTargetCheckUtc = DateTime.UtcNow;
+                VerifyTargetStillPresent(target);
+            }
             var relative = _motionMapper.Translate(sourceDx, sourceDy);
             var current = ReadCursorPosition();
             var returnPlan = ReturnEdgePlanner.Plan(current, relative, target.Bounds, _returnEdgeInsetPixels);

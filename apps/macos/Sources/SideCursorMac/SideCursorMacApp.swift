@@ -11,7 +11,10 @@ struct SideCursorMacApp: App {
     var body: some Scene {
         MenuBarExtra("SideCursor", systemImage: model.menuIcon) {
             StatusMenuView(model: model)
-                .onAppear { model.start() }
+                .onAppear {
+                    model.start()
+                    model.session.refreshAccessibilityAndCapture()
+                }
         }
         .menuBarExtraStyle(.window)
 
@@ -231,7 +234,8 @@ private struct SettingsView: View {
         .padding(20)
         .onAppear {
             model.refreshDisplays()
-            model.session.refreshAccessibility()
+            model.session.refreshAccessibilityAndCapture()
+            model.session.requestMissingPermissions()
             model.session.refreshGestureProfileStatus()
         }
     }
@@ -362,8 +366,9 @@ private struct SettingsView: View {
         Form {
             Section("Input capture") {
                 LabeledContent(AccessibilityPermission.settingsName, value: model.session.accessibilityGranted ? "Granted" : "Required")
-                LabeledContent("Event tap", value: model.session.isInputTapRunning ? "Running" : "Stopped")
-                Button("Request Accessibility permission") { model.session.requestAccessibilityAccess() }
+                LabeledContent("Input Monitoring", value: model.session.inputMonitoringGranted ? "Granted" : "Required")
+                LabeledContent("Event tap", value: eventTapStatus)
+                Button("Request permission") { model.session.requestAccessibilityAccess() }
                 Button("Refresh permission state") { model.session.refreshAccessibility() }
                 Text("On macOS 27, Apple renamed Accessibility to Device Control and Data Access. Enable SideCursor there; if SideCursor is listed under Input Monitoring too, enable it there as well.")
                     .font(.caption)
@@ -411,6 +416,7 @@ private struct SettingsView: View {
                     value: model.session.roundTripMilliseconds.map { String(format: "%.0f ms", $0) } ?? "—"
                 )
                 LabeledContent("Source display", value: model.session.configuration.sourceDisplayID ?? "Not selected")
+                LabeledContent("Handoff", value: model.session.handoffDebug ?? "—")
                 Text(model.session.statusMessage).fixedSize(horizontal: false, vertical: true)
                 if let error = model.session.lastError {
                     Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
@@ -535,5 +541,10 @@ private struct SettingsView: View {
 
     private func isSelected(_ display: SideCursorCore.DisplayDescriptor) -> Bool {
         model.session.configuration.sourceDisplayID == display.stableID
+    }
+
+    private var eventTapStatus: String {
+        guard model.session.isInputTapRunning else { return "Stopped" }
+        return model.session.isInputTapFiltering ? "Running (filtering)" : "Running (listen-only)"
     }
 }

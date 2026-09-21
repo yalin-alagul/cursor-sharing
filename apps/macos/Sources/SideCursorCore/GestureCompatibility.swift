@@ -291,6 +291,7 @@ public final class GestureCompatibilityManager {
         for preference in preferences {
             try preferenceStore.set(preference.disabledValue, at: preference.address)
         }
+        reloadGestureServices()
         return try verify()
     }
 
@@ -307,7 +308,29 @@ public final class GestureCompatibilityManager {
             }
         }
         try snapshotStore.remove()
+        reloadGestureServices()
         return true
+    }
+
+    /// `cfprefsd` caches the per-host trackpad preferences and Dock owns the
+    /// Mission Control, Space, App Expose, Show Desktop, and Launchpad
+    /// gestures.  Restarting both applies the profile without requiring the
+    /// user to sign out or reboot, which is why writing the keys alone left
+    /// the old gestures running.
+    private func reloadGestureServices() {
+        runKillall("cfprefsd")
+        Thread.sleep(forTimeInterval: 0.15)
+        runKillall("Dock")
+    }
+
+    private func runKillall(_ processName: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+        process.arguments = [processName]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
     }
 
     public func verify() throws -> Bool {

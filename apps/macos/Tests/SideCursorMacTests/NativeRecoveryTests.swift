@@ -25,6 +25,63 @@ final class NativeRecoveryTests: XCTestCase {
     }
 
     func testSelectedDisplayEdgeOnlyCrossesOnRightwardMotion() {
+        let route = makeUpper4KRoute()
+        // maxX is 1733, so the last reachable pixel is 1732.
+        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1732, y: -600), deltaX: 1))
+        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1733, y: -600), deltaX: 1))
+        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1732, y: -600), deltaX: -1))
+        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1200, y: -600), deltaX: 10))
+    }
+
+    func testEdgeCrossingToleratesOvershootBeyondTheRightEdge() {
+        let route = makeUpper4KRoute()
+        // macOS can report the crossing sample a few pixels past the bounds.
+        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1735, y: -600), deltaX: 1))
+        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1750, y: -600), deltaX: 4))
+        // A pointer already far to the right on another display must not hand off.
+        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 2200, y: -600), deltaX: 1))
+    }
+
+    func testEdgeCrossingUsesTrackedPreviousLocationWhenDeltaIsZero() {
+        let route = makeUpper4KRoute()
+        // The parked-at-the-edge sample often carries deltaX == 0.
+        XCTAssertTrue(route.crossesFromInside(
+            CGPoint(x: 1733, y: -600),
+            deltaX: 0,
+            previous: CGPoint(x: 1730, y: -600)
+        ))
+        XCTAssertTrue(route.crossesFromInside(
+            CGPoint(x: 1735, y: -600),
+            deltaX: 0,
+            previous: CGPoint(x: 1732, y: -600)
+        ))
+        // Moving right but already far onto another display stays local.
+        XCTAssertFalse(route.crossesFromInside(
+            CGPoint(x: 2201, y: -600),
+            deltaX: 0,
+            previous: CGPoint(x: 2200, y: -600)
+        ))
+    }
+
+    func testEdgeCrossingRejectsLeftwardAndOutOfRangeMotion() {
+        let route = makeUpper4KRoute()
+        XCTAssertFalse(route.crossesFromInside(
+            CGPoint(x: 1732, y: -600),
+            deltaX: 0,
+            previous: CGPoint(x: 1735, y: -600)
+        ))
+        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1732, y: 10), deltaX: 5))
+        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1732, y: -1200), deltaX: 5))
+    }
+
+    func testNearRightEdgeProbeBand() {
+        let route = makeUpper4KRoute()
+        XCTAssertTrue(route.isNearRightEdge(CGPoint(x: 1728, y: -600)))
+        XCTAssertFalse(route.isNearRightEdge(CGPoint(x: 1600, y: -600)))
+        XCTAssertFalse(route.isNearRightEdge(CGPoint(x: 1728, y: 10)))
+    }
+
+    private func makeUpper4KRoute() -> EdgeRoute {
         let display = DisplayDescriptor(
             stableID: "upper-4k",
             runtimeID: 2,
@@ -33,12 +90,7 @@ final class NativeRecoveryTests: XCTestCase {
             isBuiltIn: false,
             isMain: false
         )
-        let route = EdgeRoute(display: display)
-        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1732, y: -600), deltaX: 1))
-        XCTAssertTrue(route.crossesFromInside(CGPoint(x: 1733, y: -600), deltaX: 1))
-        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1732, y: -600), deltaX: -1))
-        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1200, y: -600), deltaX: 10))
-        XCTAssertFalse(route.crossesFromInside(CGPoint(x: 1735, y: -600), deltaX: 1))
+        return EdgeRoute(display: display)
     }
 
     func testSavedDisplayRouteDoesNotFallBackWhenThatDisplayIsMissing() {
@@ -313,7 +365,7 @@ private final class FakeCursorPlatform: CursorPlatform {
         associateCount += 1
         return .success
     }
-    func hideCursor() { hideCount += 1 }
+    func hideCursor(on display: DisplayDescriptor) { hideCount += 1 }
     func unhideCursor() { unhideCount += 1 }
     func warpMouse(to point: CGPoint) -> CGError {
         warpedPoints.append(point)

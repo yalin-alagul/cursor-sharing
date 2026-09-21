@@ -12,7 +12,9 @@ public final class SessionController: ObservableObject {
     @Published public private(set) var roundTripMilliseconds: Double?
     @Published public private(set) var isListening = false
     @Published public private(set) var accessibilityGranted = false
+    @Published public private(set) var inputMonitoringGranted = false
     @Published public private(set) var gestureProfileStatus: GestureProfileStatus = .notApplied
+    @Published public private(set) var handoffDebug: String?
     @Published public var configuration: SideCursorConfiguration {
         didSet {
             configurationStore.save(configuration)
@@ -24,7 +26,13 @@ public final class SessionController: ObservableObject {
     public var displays: [DisplayDescriptor] { DisplayCatalog.activeDisplays() }
     public var selectedRoute: EdgeRoute? { currentRoute }
     public var isInputTapRunning: Bool { inputTap.isRunning }
+    public var isInputTapFiltering: Bool { inputTap.isFiltering }
     public var hasPairingCode: Bool { (try? pairingSecretStore.load(account: configuration.pairingAccount)) != nil }
+
+    /// Short guard after a return so the release warp cannot immediately
+    /// re-trigger a handoff, without making back-and-forth crossings feel
+    /// laggy.
+    private static let handoffReentryDelay: TimeInterval = 0.2
 
     private let configurationStore: ConfigurationStoring
     private let pairingSecretStore: PairingSecretStoring
@@ -43,7 +51,11 @@ public final class SessionController: ObservableObject {
     private var pendingEnterID: UUID?
     private var entryTimeout: Timer?
     private var pingTimer: Timer?
+    private var lastPongAt: Date?
     private var displayObserver: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
+    private var permissionPollTimer: Timer?
+    private var didAttemptFilteringUpgrade = false
 
     public init(
         configurationStore: ConfigurationStoring = UserDefaultsConfigurationStore(),
@@ -66,6 +78,20 @@ public final class SessionController: ObservableObject {
         refreshAccessibility()
         refreshRoute()
         refreshGestureProfileStatus()
+        // The HID event tap now drops gesture events only while a remote
+        // session owns input, so a previously applied persistent profile is
+        // no longer needed.  Undo it so normal local gestures come back.
+        if gestureProfileStatus != .notApplied, (try? gestureCompatibility.restore()) == true {
+            gestureProfileStatus = .notApplied
+        }
+        // A rebuilt ad-hoc-signed app loses its Accessibility grant.  Ask once
+        // at launch so SideCursor is listed for the user to enable, then start
+        // the event tap as soon as the grant appears.
+        if !accessibilityGranted {
+            AccessibilityPermission.requestPrompt()
+        } else if !inputMonitoringGranted {
+            AccessibilityPermission.requestInputMonitoring()
+        }
         if displayObserver == nil {
             displayObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.didChangeScreenParametersNotification,
@@ -78,6 +104,20 @@ public final class SessionController: ObservableObject {
                 }
             }
         }
+        if activationObserver == nil {
+            activationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor [self] in
+                    self.requestMissingPermissions()
+                    self.refreshAccessibilityAndCapture()
+                }
+            }
+        }
+        startPermissionPolling()
         clipboard.start { [weak self] text in
             guard let self else { return }
             Task { @MainActor [self] in
@@ -89,13 +129,71 @@ public final class SessionController: ObservableObject {
             : "Grant Accessibility access to enable input sharing"
     }
 
+    /// Re-reads the Accessibility state and starts the event tap when it has
+    /// just become available.  Safe to call repeatedly.
+    public func refreshAccessibilityAndCapture() {
+        let wasGranted = accessibilityGranted
+        refreshAccessibility()
+        if accessibilityGranted, !inputTap.isRunning {
+            startInputCapture()
+        } else if accessibilityGranted, inputMonitoringGranted,
+                  !inputTap.isFiltering, !didAttemptFilteringUpgrade {
+            // Recreate the tap in place (without disturbing the session) if the
+            // system ever hands us a non-filtering one.
+            didAttemptFilteringUpgrade = true
+            upgradeTapToFiltering()
+        }
+        if accessibilityGranted != wasGranted {
+            synchronizeGate()
+        }
+    }
+
+    private func upgradeTapToFiltering() {
+        do {
+            try inputTap.start()
+            if inputTap.isFiltering {
+                statusMessage = phase == .remote ? "Remote input active" : "Input capture is ready"
+            } else {
+                statusMessage = "Input capture is listen-only; restart SideCursor so macOS can install a filtering tap."
+            }
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = lastError ?? "Input capture failed"
+        }
+    }
+
+    private func startPermissionPolling() {
+        guard permissionPollTimer == nil else { return }
+        permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor [self] in
+                // Never request from the background; only react to grants the
+                // user has already made.
+                self.refreshAccessibilityAndCapture()
+            }
+        }
+    }
+
     public func refreshAccessibility() {
         accessibilityGranted = AccessibilityPermission.isGranted
+        inputMonitoringGranted = AccessibilityPermission.inputMonitoringGranted
     }
 
     public func requestAccessibilityAccess() {
-        AccessibilityPermission.requestPrompt()
-        statusMessage = "Allow SideCursor in Privacy & Security → \(AccessibilityPermission.settingsName), then return here."
+        requestMissingPermissions()
+        statusMessage = "Allow SideCursor under Privacy & Security (Device Control and Data Access and Input Monitoring), then return here."
+    }
+
+    /// Requests any permission SideCursor is still missing.  Call only while
+    /// the app's own UI is frontmost so the prompt is attributable to it.
+    public func requestMissingPermissions() {
+        refreshAccessibility()
+        NSApp.activate(ignoringOtherApps: true)
+        if !accessibilityGranted {
+            AccessibilityPermission.requestPrompt()
+        } else if !inputMonitoringGranted {
+            AccessibilityPermission.requestInputMonitoring()
+        }
     }
 
     public func startInputCapture() {
@@ -216,7 +314,7 @@ public final class SessionController: ObservableObject {
             let verified = try gestureCompatibility.apply()
             gestureProfileStatus = .applied(verified: verified)
             statusMessage = verified
-                ? "Gesture Compatibility Profile applied. Sign out or restart before testing system gestures."
+                ? "Gesture Compatibility Profile applied; conflicting system gestures are disabled."
                 : "Gesture profile was saved, but macOS did not verify every setting."
             lastError = nil
         } catch {
@@ -230,7 +328,7 @@ public final class SessionController: ObservableObject {
             let restored = try gestureCompatibility.restore()
             gestureProfileStatus = .notApplied
             statusMessage = restored
-                ? "Original gesture settings were restored. Sign out or restart before testing them."
+                ? "Original gesture settings were restored."
                 : "No SideCursor gesture snapshot was found."
             lastError = nil
         } catch {
@@ -326,6 +424,8 @@ public final class SessionController: ObservableObject {
                             self.statusMessage = self.inputTap.isRunning
                                 ? "Paired Windows companion is ready."
                                 : "Paired Windows companion is ready; grant Accessibility to enable input sharing."
+                            self.updateHandoffRouteDebug()
+                            self.lastPongAt = Date()
                             self.startPingTimer()
                         } catch {
                             self.recover(reason: error.localizedDescription)
@@ -413,7 +513,7 @@ public final class SessionController: ObservableObject {
                 phase = machine.phase
                 synchronizeGate()
                 try cursorController.release(returnY: y, inset: configuration.returnInset)
-                inputGate.blockNewHandoffs(for: 0.75)
+                inputGate.blockNewHandoffs(for: Self.handoffReentryDelay)
                 peer?.send(.returnAck(id: id))
                 try machine.transition(.returnAcknowledged)
                 phase = machine.phase
@@ -445,6 +545,7 @@ public final class SessionController: ObservableObject {
         case let .pong(sentAtMs):
             let now = Int64(Date().timeIntervalSince1970 * 1_000)
             roundTripMilliseconds = max(0, Double(now - sentAtMs))
+            lastPongAt = Date()
         case .enterRequest:
             peer?.send(.enterReject(id: UUID(), reason: "Mac is source-only"))
         }
@@ -453,6 +554,7 @@ public final class SessionController: ObservableObject {
     private func handleInputAction(_ action: InputTapAction) {
         switch action {
         case let .edgeCrossed(y):
+            handoffDebug = String(format: "edge crossed at y=%.2f", y)
             requestEntry(y: y)
         case let .input(event):
             guard phase == .remote else { return }
@@ -464,7 +566,28 @@ public final class SessionController: ObservableObject {
             toggleRemoteMode()
         case let .tapFailure(reason):
             recover(reason: reason)
+        case let .handoffProbe(x, y, deltaX, previousX, minX, maxX):
+            guard phase == .ready else { return }
+            let prior = previousX.map { String(format: "%.0f", $0) } ?? "nil"
+            handoffDebug = String(
+                format: "ready x=%.0f y=%.0f dx=%lld prior=%@ range=[%.0f, %.0f]",
+                x, y, deltaX, prior, minX, maxX
+            )
         }
+    }
+
+    /// Records the resolved handoff route so the Diagnostics tab can show what
+    /// the pointer is actually compared against.
+    private func updateHandoffRouteDebug() {
+        guard let route = currentRoute else {
+            handoffDebug = "no active handoff route"
+            return
+        }
+        let bounds = route.display.bounds
+        handoffDebug = String(
+            format: "route %@ x=[%.0f, %.0f] y=[%.0f, %.0f]",
+            route.display.name, bounds.x, bounds.maxX, bounds.y, bounds.maxY
+        )
     }
 
     private func scale(_ event: NativeInputEvent) -> NativeInputEvent {
@@ -495,7 +618,7 @@ public final class SessionController: ObservableObject {
         }
         peer?.send(.releaseAll(reason: reason))
         cursorController.forceRestore()
-        inputGate.blockNewHandoffs(for: 0.75)
+        inputGate.blockNewHandoffs(for: Self.handoffReentryDelay)
         if phase == .recovering {
             try? machine.transition(.localInputRestored)
             phase = machine.phase
@@ -534,7 +657,7 @@ public final class SessionController: ObservableObject {
         }
         oldPeer?.close()
         cursorController.forceRestore()
-        inputGate.blockNewHandoffs(for: 0.75)
+        inputGate.blockNewHandoffs(for: Self.handoffReentryDelay)
         if shouldTransitionToDisconnected {
             transitionToDisconnected()
             statusMessage = "Transport stopped; local Mac control is active."
@@ -584,6 +707,16 @@ public final class SessionController: ObservableObject {
             guard let self else { return }
             Task { @MainActor [self] in
                 guard self.peer != nil else { return }
+                // If Windows stops answering while it owns input, the Mac would
+                // otherwise keep suppressing the cursor and keyboard forever
+                // with no way back except replugging the peer.  Force local
+                // control back instead.
+                if let lastPongAt = self.lastPongAt,
+                   self.phase == .remote || self.phase == .entering || self.phase == .returning,
+                   Date().timeIntervalSince(lastPongAt) > 6 {
+                    self.recover(reason: "Windows stopped responding to keepalive")
+                    return
+                }
                 let now = Int64(Date().timeIntervalSince1970 * 1_000)
                 self.peer?.send(.ping(sentAtMs: now))
             }
@@ -594,11 +727,15 @@ public final class SessionController: ObservableObject {
         pingTimer?.invalidate()
         pingTimer = nil
         roundTripMilliseconds = nil
+        lastPongAt = nil
     }
 
     deinit {
         if let displayObserver {
             NotificationCenter.default.removeObserver(displayObserver)
+        }
+        if let activationObserver {
+            NotificationCenter.default.removeObserver(activationObserver)
         }
     }
 }
