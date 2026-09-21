@@ -63,6 +63,7 @@ public sealed class CommandBindings
     public string DesktopRight { get; set; } = "WIN+CTRL+RIGHT";
     public string TaskView { get; set; } = "WIN+TAB";
     public string ShowDesktop { get; set; } = "WIN+D";
+    public string CloseTaskView { get; set; } = "ESCAPE";
 
     public void Normalize()
     {
@@ -70,6 +71,7 @@ public sealed class CommandBindings
         DesktopRight = NormalizeChord(DesktopRight, "WIN+CTRL+RIGHT");
         TaskView = NormalizeChord(TaskView, "WIN+TAB");
         ShowDesktop = NormalizeChord(ShowDesktop, "WIN+D");
+        CloseTaskView = NormalizeChord(CloseTaskView, "ESCAPE");
     }
 
     public string? GetForCommand(string command) => command switch
@@ -78,6 +80,7 @@ public sealed class CommandBindings
         "desktop_right" => DesktopRight,
         "task_view" => TaskView,
         "show_desktop" => ShowDesktop,
+        "close_task_view" => CloseTaskView,
         _ => null,
     };
 

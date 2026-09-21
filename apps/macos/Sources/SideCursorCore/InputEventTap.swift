@@ -119,6 +119,16 @@ public enum AccessibilityPermission {
 }
 
 public final class InputEventTap {
+    /// Gesture event types are not exposed as named `CGEventType` cases, so
+    /// they are referenced by their fixed CoreGraphics raw values.
+    private static let gestureEventType = CGEventType(rawValue: 29)
+    /// Raw gesture fields. The "began" event encodes the swipe direction in
+    /// field 113 (horizontal: -left/+right) and field 119 (vertical: -up/+down);
+    /// field 132 is the phase (1 = began).
+    private static let gestureXField = CGEventField(rawValue: 113)!
+    private static let gestureYField = CGEventField(rawValue: 119)!
+    private static let gestureStateField = CGEventField(rawValue: 132)!
+
     private let gate: InputGate
     private let actionHandler: (InputTapAction) -> Void
     private let actionQueue: DispatchQueue
@@ -249,9 +259,35 @@ public final class InputEventTap {
         if type == .keyDown || type == .keyUp || type == .flagsChanged {
             return handleKey(type, event: event, snapshot: snapshot)
         }
-        // Everything else includes the gesture events that drive Mission
-        // Control, Spaces, Launchpad, and Show Desktop.  They are dropped
-        // while a remote session owns input so those actions never fire.
+        if type == Self.gestureEventType {
+            return handleGesture(event, snapshot: snapshot)
+        }
+        // Everything else includes the remaining gesture events (magnify,
+        // rotate) and other non-input events.  They are dropped while a remote
+        // session owns input so those actions never fire.
+        switch snapshot.mode {
+        case .remote, .entering, .returning, .recovering:
+            return nil
+        case .local, .ready:
+            return Unmanaged.passUnretained(event)
+        }
+    }
+
+    /// Three/four-finger trackpad swipes arrive as raw gesture (type 29)
+    /// events. The "began" event carries the swipe direction: field 113 holds
+    /// the horizontal component (negative left / positive right) and field 119
+    /// the vertical component (negative up / positive down). These map to the
+    /// same Windows desktop commands as the Ctrl+Option+arrow hotkeys, and the
+    /// gesture is never passed through to macOS.
+    private func handleGesture(_ event: CGEvent, snapshot: InputGateSnapshot) -> Unmanaged<CGEvent>? {
+        let state = event.getIntegerValueField(Self.gestureStateField)
+        if state == 1, snapshot.mode == .remote {
+            let dx = event.getDoubleValueField(Self.gestureXField)
+            let dy = event.getDoubleValueField(Self.gestureYField)
+            if let command = MacVirtualKeyMapper.remoteGestureCommand(deltaX: dx, deltaY: dy, hotkeys: snapshot.hotkeys) {
+                emit(.command(command))
+            }
+        }
         switch snapshot.mode {
         case .remote, .entering, .returning, .recovering:
             return nil
@@ -465,5 +501,17 @@ public enum MacVirtualKeyMapper {
         case 125 where hotkeys.showDesktopEnabled: return "show_desktop"
         default: return nil
         }
+    }
+
+    /// Maps a three/four-finger swipe direction to the same Windows desktop
+    /// command as the Ctrl+Option+arrow hotkeys. `deltaX`/`deltaY` come from
+    /// the raw gesture fields (-left/+right, -up/+down). Swipe up opens Task
+    /// View; swipe down closes it again so the previous view is restored.
+    public static func remoteGestureCommand(deltaX: Double, deltaY: Double, hotkeys: RemoteHotkeys) -> String? {
+        if deltaY < 0, hotkeys.taskViewEnabled { return "task_view" }
+        if deltaY > 0, hotkeys.taskViewEnabled { return "close_task_view" }
+        if deltaX < 0, hotkeys.desktopLeftEnabled { return "desktop_left" }
+        if deltaX > 0, hotkeys.desktopRightEnabled { return "desktop_right" }
+        return nil
     }
 }
