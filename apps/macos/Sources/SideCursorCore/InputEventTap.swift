@@ -78,7 +78,7 @@ public enum InputTapError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .accessibilityPermissionMissing:
-            return "Grant SideCursor Accessibility access in System Settings before starting input sharing."
+            return "Grant SideCursor \(AccessibilityPermission.settingsName) access in System Settings before starting input sharing."
         case .creationFailed:
             return "macOS could not create SideCursor's input event tap."
         }
@@ -86,6 +86,14 @@ public enum InputTapError: Error, LocalizedError {
 }
 
 public enum AccessibilityPermission {
+    /// macOS 27 renamed the user-facing Accessibility privacy pane while the
+    /// underlying AX API retained its existing name.
+    public static var settingsName: String {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? "Device Control and Data Access"
+            : "Accessibility"
+    }
+
     public static var isGranted: Bool { AXIsProcessTrusted() }
 
     public static func requestPrompt() {
