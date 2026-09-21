@@ -122,18 +122,30 @@ public final class InputEventTap {
     /// Gesture event types are not exposed as named `CGEventType` cases, so
     /// they are referenced by their fixed CoreGraphics raw values.
     private static let gestureEventType = CGEventType(rawValue: 29)
-    /// Raw gesture fields. The "began" event encodes the swipe direction in
-    /// field 113 (horizontal: -left/+right) and field 119 (vertical: -up/+down);
-    /// field 132 is the phase (1 = began).
+    /// Raw gesture fields: 113 = horizontal displacement, 119 = vertical
+    /// displacement, 132 = phase (1 began / 2 changed / 4 ended / 128 cancel),
+    /// 110 = gesture kind (6 = swipe, 32 = scroll).
     private static let gestureXField = CGEventField(rawValue: 113)!
     private static let gestureYField = CGEventField(rawValue: 119)!
     private static let gestureStateField = CGEventField(rawValue: 132)!
+    private static let gestureKindField = CGEventField(rawValue: 110)!
+    private static let swipeGestureKind: Int64 = 6
+    /// A swipe accumulates tens of pixels of displacement, far above this.
+    private static let gestureSwipeThreshold = 5.0
 
     private let gate: InputGate
     private let actionHandler: (InputTapAction) -> Void
     private let actionQueue: DispatchQueue
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    /// Gesture tracking so a swipe is decided from its whole lifetime rather
+    /// than a single (possibly noisy) "began" sample.
+    private var gestureActive = false
+    private var gestureIsSwipeKind = false
+    private var gestureLastDx = 0.0
+    private var gestureLastDy = 0.0
+    private var gestureMaxDx = 0.0
+    private var gestureMaxDy = 0.0
     /// True when macOS installed the tap as a filter (events can be
     /// suppressed).  A tap created before permission was granted is silently
     /// made listen-only, which lets local input leak during remote mode.
@@ -274,20 +286,50 @@ public final class InputEventTap {
     }
 
     /// Three/four-finger trackpad swipes arrive as raw gesture (type 29)
-    /// events. The "began" event carries the swipe direction: field 113 holds
-    /// the horizontal component (negative left / positive right) and field 119
-    /// the vertical component (negative up / positive down). These map to the
-    /// same Windows desktop commands as the Ctrl+Option+arrow hotkeys, and the
-    /// gesture is never passed through to macOS.
+    /// events. A two-finger gesture is always accompanied by scroll-wheel
+    /// events; a three/four-finger swipe is not. The gesture's lifetime is
+    /// tracked, and a command is emitted at its end only if no scroll events
+    /// were seen and the accumulated displacement exceeds the swipe threshold.
     private func handleGesture(_ event: CGEvent, snapshot: InputGateSnapshot) -> Unmanaged<CGEvent>? {
         let state = event.getIntegerValueField(Self.gestureStateField)
-        if state == 1, snapshot.mode == .remote {
-            let dx = event.getDoubleValueField(Self.gestureXField)
-            let dy = event.getDoubleValueField(Self.gestureYField)
-            if let command = MacVirtualKeyMapper.remoteGestureCommand(deltaX: dx, deltaY: dy, hotkeys: snapshot.hotkeys) {
+        let dx = event.getDoubleValueField(Self.gestureXField)
+        let dy = event.getDoubleValueField(Self.gestureYField)
+
+        switch state {
+        case 1: // began
+            gestureActive = true
+            gestureIsSwipeKind = event.getIntegerValueField(Self.gestureKindField) == Self.swipeGestureKind
+            gestureLastDx = dx
+            gestureLastDy = dy
+            gestureMaxDx = 0
+            gestureMaxDy = 0
+        case 2: // changed
+            guard gestureActive else { break }
+            gestureLastDx = dx
+            gestureLastDy = dy
+            gestureMaxDx = max(gestureMaxDx, abs(dx))
+            gestureMaxDy = max(gestureMaxDy, abs(dy))
+        case 4, 128: // ended / cancelled
+            let wasActive = gestureActive
+            gestureActive = false
+            guard wasActive, snapshot.mode == .remote else { break }
+            // Only a fast, predominantly horizontal swipe of the swipe kind
+            // produces a command: three-finger left/right switch desktops.
+            // Everything else (vertical motion, slow gestures, scrolling)
+            // stays local.
+            guard gestureIsSwipeKind else { break }
+            guard gestureMaxDx > gestureMaxDy, gestureMaxDx >= Self.gestureSwipeThreshold else { break }
+            if let command = MacVirtualKeyMapper.remoteGestureCommand(
+                deltaX: gestureLastDx,
+                deltaY: 0,
+                hotkeys: snapshot.hotkeys
+            ) {
                 emit(.command(command))
             }
+        default:
+            break
         }
+
         switch snapshot.mode {
         case .remote, .entering, .returning, .recovering:
             return nil
@@ -503,13 +545,10 @@ public enum MacVirtualKeyMapper {
         }
     }
 
-    /// Maps a three/four-finger swipe direction to the same Windows desktop
-    /// command as the Ctrl+Option+arrow hotkeys. `deltaX`/`deltaY` come from
-    /// the raw gesture fields (-left/+right, -up/+down). Swipe up opens Task
-    /// View; swipe down closes it again so the previous view is restored.
+    /// Maps a horizontal three/four-finger swipe to the same Windows desktop
+    /// command as the Ctrl+Option+Left/Right hotkeys. Only left and right are
+    /// gesture-driven; up/down remain keyboard-only.
     public static func remoteGestureCommand(deltaX: Double, deltaY: Double, hotkeys: RemoteHotkeys) -> String? {
-        if deltaY < 0, hotkeys.taskViewEnabled { return "task_view" }
-        if deltaY > 0, hotkeys.taskViewEnabled { return "close_task_view" }
         if deltaX < 0, hotkeys.desktopLeftEnabled { return "desktop_left" }
         if deltaX > 0, hotkeys.desktopRightEnabled { return "desktop_right" }
         return nil
