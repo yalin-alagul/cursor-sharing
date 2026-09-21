@@ -469,6 +469,7 @@ public sealed class V2SecureChannel : IAsyncDisposable
 
     private readonly Stream _stream;
     private readonly byte[] _sessionKey;
+    private readonly KeyParameter _keyParameter;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly StrictSequenceWindow _receiveSequence = new();
     private ulong _sendSequence;
@@ -484,6 +485,7 @@ public sealed class V2SecureChannel : IAsyncDisposable
 
         _stream = stream;
         _sessionKey = sessionKey.ToArray();
+        _keyParameter = new KeyParameter(_sessionKey);
     }
 
     public async Task SendAsync<T>(T message, CancellationToken cancellationToken)
@@ -603,15 +605,15 @@ public sealed class V2SecureChannel : IAsyncDisposable
         await _stream.DisposeAsync().ConfigureAwait(false);
     }
 
-    private byte[] Encrypt(ReadOnlySpan<byte> plaintext, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> aad)
+    private byte[] Encrypt(byte[] plaintext, byte[] nonce, byte[] aad)
     {
         var cipher = new Org.BouncyCastle.Crypto.Modes.ChaCha20Poly1305();
-        var parameters = new AeadParameters(new KeyParameter(_sessionKey), V2Protocol.AeadTagBytes * 8, nonce.ToArray(), aad.ToArray());
+        var parameters = new AeadParameters(_keyParameter, V2Protocol.AeadTagBytes * 8, nonce, aad);
         cipher.Init(true, parameters);
         var output = new byte[cipher.GetOutputSize(plaintext.Length)];
         try
         {
-            var length = cipher.ProcessBytes(plaintext.ToArray(), 0, plaintext.Length, output, 0);
+            var length = cipher.ProcessBytes(plaintext, 0, plaintext.Length, output, 0);
             length += cipher.DoFinal(output, length);
             return output[..length];
         }
@@ -622,15 +624,15 @@ public sealed class V2SecureChannel : IAsyncDisposable
         }
     }
 
-    private byte[] Decrypt(ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> aad)
+    private byte[] Decrypt(byte[] ciphertext, byte[] nonce, byte[] aad)
     {
         var cipher = new Org.BouncyCastle.Crypto.Modes.ChaCha20Poly1305();
-        var parameters = new AeadParameters(new KeyParameter(_sessionKey), V2Protocol.AeadTagBytes * 8, nonce.ToArray(), aad.ToArray());
+        var parameters = new AeadParameters(_keyParameter, V2Protocol.AeadTagBytes * 8, nonce, aad);
         cipher.Init(false, parameters);
         var output = new byte[cipher.GetOutputSize(ciphertext.Length)];
         try
         {
-            var length = cipher.ProcessBytes(ciphertext.ToArray(), 0, ciphertext.Length, output, 0);
+            var length = cipher.ProcessBytes(ciphertext, 0, ciphertext.Length, output, 0);
             length += cipher.DoFinal(output, length);
             return output[..length];
         }
