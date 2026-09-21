@@ -167,17 +167,37 @@ public final class DefaultsGesturePreferenceStore: GesturePreferenceStoring {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
         process.arguments = arguments
-        let standardOutput = Pipe()
-        let standardError = Pipe()
-        process.standardOutput = standardOutput
-        process.standardError = standardError
+
+        // Redirect to temporary files instead of pipes.  `defaults export` can
+        // emit more than the 64 KiB pipe buffer, and a pipe drained only after
+        // `waitUntilExit()` deadlocks once the child blocks on a full buffer.
+        // Files have no such fixed capacity, so this cannot hang.
+        let fileManager = FileManager.default
+        let identifier = UUID().uuidString
+        let outputURL = fileManager.temporaryDirectory.appendingPathComponent("sidecursor-defaults-\(identifier).out")
+        let errorURL = fileManager.temporaryDirectory.appendingPathComponent("sidecursor-defaults-\(identifier).err")
+        fileManager.createFile(atPath: outputURL.path, contents: nil)
+        fileManager.createFile(atPath: errorURL.path, contents: nil)
+        defer {
+            try? fileManager.removeItem(at: outputURL)
+            try? fileManager.removeItem(at: errorURL)
+        }
+
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+        let errorHandle = try FileHandle(forWritingTo: errorURL)
+        process.standardOutput = outputHandle
+        process.standardError = errorHandle
         try process.run()
         process.waitUntilExit()
-        let output = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        try? outputHandle.close()
+        try? errorHandle.close()
+
+        let output = (try? Data(contentsOf: outputURL)) ?? Data()
         guard process.terminationStatus == 0 || permitFailure else {
-            let error = standardError.fileHandleForReading.readDataToEndOfFile()
-            let detail = String(data: error, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown failure"
-            throw GestureProfileError.defaultsFailed(detail)
+            let errorData = (try? Data(contentsOf: errorURL)) ?? Data()
+            let detail = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GestureProfileError.defaultsFailed(detail?.isEmpty == false ? detail! : "unknown failure")
         }
         return output
     }

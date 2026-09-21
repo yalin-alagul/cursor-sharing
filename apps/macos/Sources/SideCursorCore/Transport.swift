@@ -435,6 +435,9 @@ private final class RFCOMMServiceDiscovery: NSObject {
         lock.lock()
         if cancelled || delivered {
             lock.unlock()
+            // A DispatchSource must be resumed before it is released; cancelling
+            // a still-suspended source and dropping it is a libdispatch crash.
+            poll.resume()
             poll.cancel()
             return
         }
@@ -709,6 +712,11 @@ public final class BluetoothRFCOMMByteStream: NSObject, RawByteStream, IOBluetoo
     private func finish(_ error: Error?) {
         guard !didTerminal else { return }
         didTerminal = true
+        // Release the RFCOMM channel and device on every terminal path so a
+        // remote close cannot leave them retained.
+        channel?.setDelegate(nil)
+        channel = nil
+        device = nil
         if let pendingRead {
             self.pendingRead = nil
             pendingRead(.failure(error ?? TransportError.disconnected))

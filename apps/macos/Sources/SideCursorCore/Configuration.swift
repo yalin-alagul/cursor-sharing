@@ -91,6 +91,44 @@ public struct SideCursorConfiguration: Codable, Equatable {
         self.pairingAccount = pairingAccount
         self.remoteHotkeys = remoteHotkeys
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case transport
+        case listenPort
+        case bluetoothPeerAddress
+        case bluetoothChannel
+        case sourceDisplayID
+        case sourceEdge
+        case returnInset
+        case pointerScale
+        case clipboardEnabled
+        case clipboardMaximumBytes
+        case pairingAccount
+        case remoteHotkeys
+    }
+
+    /// Decoding re-applies the same clamps as the memberwise initializer.  A
+    /// synthesized decoder would bypass them, and a stored value outside the
+    /// valid range reaches `UInt16(configuration.listenPort)` at transport
+    /// start and traps the app.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = SideCursorConfiguration()
+        self.init(
+            transport: try container.decodeIfPresent(TransportKind.self, forKey: .transport) ?? defaults.transport,
+            listenPort: try container.decodeIfPresent(Int.self, forKey: .listenPort) ?? defaults.listenPort,
+            bluetoothPeerAddress: try container.decodeIfPresent(String.self, forKey: .bluetoothPeerAddress) ?? defaults.bluetoothPeerAddress,
+            bluetoothChannel: try container.decodeIfPresent(Int.self, forKey: .bluetoothChannel) ?? defaults.bluetoothChannel,
+            sourceDisplayID: try container.decodeIfPresent(String.self, forKey: .sourceDisplayID),
+            sourceEdge: try container.decodeIfPresent(HorizontalEdge.self, forKey: .sourceEdge) ?? defaults.sourceEdge,
+            returnInset: try container.decodeIfPresent(Double.self, forKey: .returnInset) ?? defaults.returnInset,
+            pointerScale: try container.decodeIfPresent(Double.self, forKey: .pointerScale) ?? defaults.pointerScale,
+            clipboardEnabled: try container.decodeIfPresent(Bool.self, forKey: .clipboardEnabled) ?? defaults.clipboardEnabled,
+            clipboardMaximumBytes: try container.decodeIfPresent(Int.self, forKey: .clipboardMaximumBytes) ?? defaults.clipboardMaximumBytes,
+            pairingAccount: try container.decodeIfPresent(String.self, forKey: .pairingAccount) ?? defaults.pairingAccount,
+            remoteHotkeys: try container.decodeIfPresent(RemoteHotkeys.self, forKey: .remoteHotkeys) ?? defaults.remoteHotkeys
+        )
+    }
 }
 
 public protocol ConfigurationStoring: AnyObject {
@@ -154,10 +192,6 @@ public struct DisplayBounds: Codable, Equatable {
 
     public var maxX: Double { x + width }
     public var maxY: Double { y + height }
-
-    public func contains(_ point: CGPoint) -> Bool {
-        point.x >= x && point.x < maxX && point.y >= y && point.y < maxY
-    }
 }
 
 /// `stableID` is derived from display hardware identifiers rather than a
