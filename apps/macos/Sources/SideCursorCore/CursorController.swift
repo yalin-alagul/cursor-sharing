@@ -82,9 +82,16 @@ public final class ProductionCursorPlatform: CursorPlatform {
         }
         let app = previousApplication
         self.previousApplication = nil
-        // Activation can stall the run loop (focus transition). Defer it so
-        // returning the cursor is never delayed while input is still
-        // suppressed, which would show up as a brief pointer freeze.
+
+        // Remote control never changes which Mac app is frontmost, so most of
+        // the time the remembered app is already active.  Activating it anyway
+        // still triggers a blocking focus transition on the main run loop, which
+        // freezes the event tap for a moment and reads as a "stuck" pointer
+        // right after returning.  Only activate when focus actually differs.
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+            return
+        }
+
         DispatchQueue.main.async {
             app.activate(options: [.activateIgnoringOtherApps])
         }
