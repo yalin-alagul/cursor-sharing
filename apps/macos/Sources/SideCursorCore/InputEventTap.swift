@@ -132,9 +132,9 @@ public final class InputEventTap {
     private static let swipeGestureKind: Int64 = 6
     /// A swipe accumulates tens of pixels of displacement, far above this.
     private static let gestureSwipeThreshold = 5.0
-    /// The Mac trackpad scrolls far too fast for Windows; forward a quarter of
+    /// The Mac trackpad scrolls far too fast for Windows; forward an eighth of
     /// each scroll delta.
-    private static let scrollSensitivity = 0.25
+    private static let scrollSensitivity = 0.125
 
     private let gate: InputGate
     private let actionHandler: (InputTapAction) -> Void
