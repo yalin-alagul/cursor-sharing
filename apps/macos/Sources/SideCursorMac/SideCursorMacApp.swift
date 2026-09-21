@@ -49,14 +49,20 @@ final class SideCursorAppModel: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.refreshDisplays() }
+            guard let self else { return }
+            Task { @MainActor [self] in
+                self.refreshDisplays()
+            }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.shutdown() }
+            guard let self else { return }
+            Task { @MainActor [self] in
+                self.shutdown()
+            }
         })
         refreshDisplays()
         refreshPairingCode()
@@ -64,7 +70,10 @@ final class SideCursorAppModel: ObservableObject {
         // the safe bootstrap at app launch instead, so an already-paired Mac
         // listener is available without first opening the menu. If no pairing
         // code exists, start() only reports that setup is required.
-        DispatchQueue.main.async { [weak self] in self?.start() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.start()
+        }
     }
 
     deinit {
