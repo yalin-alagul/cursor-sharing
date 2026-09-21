@@ -35,11 +35,6 @@ public sealed class WindowsInputInjector
     private int _returnEdgeInsetPixels;
     private bool _returnRequested;
     private DateTime _lastTargetCheckUtc = DateTime.MinValue;
-    /// A short window after entry during which leftward motion cannot trigger a
-    /// return. Without it, the tail of the entry motion (or a tiny counter-move)
-    /// bounced straight back to the Mac, which looked like flicker.
-    private static readonly TimeSpan ReturnGuardAfterEntry = TimeSpan.FromMilliseconds(180);
-    private DateTime _returnGuardUntilUtc = DateTime.MinValue;
     private bool _useAbsolutePointer = true;
     private int _virtualLeft;
     private int _virtualTop;
@@ -65,10 +60,10 @@ public sealed class WindowsInputInjector
             // compatibility but must not multiply on top, which double-scaled
             // pointer motion when both controls were raised.
             _motionMapper.Configure(sourceWidth, sourceHeight, target.Bounds, calibration: 1.0);
-            // Keep a comfortable gap between the entry point and the return
-            // boundary; otherwise the pointer starts essentially on the return
-            // edge and a tiny leftward nudge sends control straight back.
-            var entryInset = Math.Max(8, configuration.ReturnEdgeInsetPixels + 20);
+            // Only a small inset keeps the pointer a hair off the return edge.
+            // Handoff is meant to be instant both ways, so do not push the entry
+            // point far inside the display.
+            var entryInset = Math.Max(2, configuration.ReturnEdgeInsetPixels + 6);
             var entry = target.Bounds.EntryPoint(normalizedY, insetPixels: entryInset);
             SetCursorPosOrThrow(entry.X, entry.Y, "Unable to position the Windows pointer at the target display edge");
 
@@ -77,7 +72,6 @@ public sealed class WindowsInputInjector
             _targetDisplay = target;
             _returnEdgeInsetPixels = configuration.ReturnEdgeInsetPixels;
             _returnRequested = false;
-            _returnGuardUntilUtc = DateTime.UtcNow + ReturnGuardAfterEntry;
             return target;
         }
     }
@@ -93,18 +87,13 @@ public sealed class WindowsInputInjector
             // return-edge plan is computed from an exact position instead of a
             // possibly-accelerated GetCursorPos reading.
             var current = _useAbsolutePointer ? new PixelPoint(_cursorX, _cursorY) : ReadCursorPosition();
-            // Ignore a return during the brief post-entry guard so the entry
-            // motion cannot immediately bounce control back to the Mac.
-            if (DateTime.UtcNow >= _returnGuardUntilUtc)
+            var returnPlan = ReturnEdgePlanner.Plan(current, relative, target.Bounds, _returnEdgeInsetPixels);
+            if (returnPlan.RequestReturn)
             {
-                var returnPlan = ReturnEdgePlanner.Plan(current, relative, target.Bounds, _returnEdgeInsetPixels);
-                if (returnPlan.RequestReturn)
-                {
-                    var boundary = returnPlan.ClampCursorTo.GetValueOrDefault();
-                    SetCursorPosOrThrow(boundary.X, boundary.Y, "Unable to keep the Windows pointer inside the selected return edge");
-                    TrackCursor(boundary);
-                    return RequestReturn(target, boundary);
-                }
+                var boundary = returnPlan.ClampCursorTo.GetValueOrDefault();
+                SetCursorPosOrThrow(boundary.X, boundary.Y, "Unable to keep the Windows pointer inside the selected return edge");
+                TrackCursor(boundary);
+                return RequestReturn(target, boundary);
             }
 
             if (relative.X != 0 || relative.Y != 0)
