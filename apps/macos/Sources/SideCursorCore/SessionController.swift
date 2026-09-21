@@ -105,6 +105,9 @@ public final class SessionController: ObservableObject {
     }
 
     public func bootstrap() {
+        inputTap.diagnosticLogger = { [weak self] message in
+            Task { @MainActor [weak self] in self?.logDiagnostic(message) }
+        }
         refreshAccessibility()
         refreshRoute()
         refreshGestureProfileStatus()
@@ -610,6 +613,7 @@ public final class SessionController: ObservableObject {
                         self.logDiagnostic(String(format: "return main-thread resume=%.1fms", resumeDelay))
                     }
                 }
+                inputTap.beginReturnProbe()
                 statusMessage = "Returned to Mac control."
             } catch {
                 recover(reason: error.localizedDescription)

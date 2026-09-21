@@ -150,23 +150,36 @@ public final class CursorController {
             platform.restoreRememberedApplication()
             throw CursorControllerError.associationFailed(association)
         }
+
+        // Position the (now frozen) cursor just inside the source display's
+        // edge while it is hidden.  `CGWarpMouseCursorPosition` makes the
+        // WindowServer ignore local mouse movement for a short window unless the
+        // mouse is re-associated immediately after, and that window was landing
+        // on the return moment and swallowing the first movement after control
+        // came back.  Doing the positioning warp during capture — seconds before
+        // the user controls this Mac again — keeps that window off the return
+        // path entirely, so returning never freezes the pointer.
+        let inset = max(4, min(24, display.bounds.width / 2))
+        let currentY = CGEvent(source: nil)?.location.y ?? (display.bounds.y + display.bounds.height / 2)
+        let point = CGPoint(
+            x: display.bounds.maxX - inset,
+            y: min(max(display.bounds.y + 1, currentY), display.bounds.maxY - 1)
+        )
+        _ = platform.warpMouse(to: point)
+
         platform.hideCursor(on: display)
         didHideCursor = true
         capturedDisplay = display
     }
 
-    /// Returns the pointer inside the configured source display before making
-    /// it local again, avoiding immediate edge re-entry.
+    /// Makes the pointer local again.  The cursor already sits at the source
+    /// edge because it was positioned and frozen (mouse disassociated) during
+    /// capture, so no warp happens here; a warp at this moment would reintroduce
+    /// the WindowServer suppression window and freeze the pointer on return.
     public func release(returnY: Double, inset: Double = 24) throws {
-        guard let display = capturedDisplay else { return }
-        let y = min(1, max(0, returnY))
-        let safeInset = max(4, min(inset, max(4, display.bounds.width / 2)))
-        let point = CGPoint(
-            x: display.bounds.maxX - safeInset,
-            y: display.bounds.y + y * max(1, display.bounds.height - 1)
-        )
-
-        let warp = platform.warpMouse(to: point)
+        guard capturedDisplay != nil else { return }
+        _ = returnY
+        _ = inset
         let association = platform.associateMouse()
         if didHideCursor {
             platform.unhideCursor()
@@ -175,7 +188,6 @@ public final class CursorController {
         capturedDisplay = nil
         platform.restoreRememberedApplication()
 
-        if warp != .success { throw CursorControllerError.warpFailed(warp) }
         if association != .success { throw CursorControllerError.associationFailed(association) }
     }
 
