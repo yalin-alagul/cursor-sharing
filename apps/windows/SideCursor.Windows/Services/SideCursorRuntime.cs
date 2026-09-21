@@ -408,6 +408,7 @@ public sealed class SideCursorRuntime : IAsyncDisposable
                 DesktopRight = source.Commands.DesktopRight,
                 TaskView = source.Commands.TaskView,
                 ShowDesktop = source.Commands.ShowDesktop,
+                CloseTaskView = source.Commands.CloseTaskView,
             },
         };
     }
