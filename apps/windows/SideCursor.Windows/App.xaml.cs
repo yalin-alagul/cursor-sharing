@@ -14,11 +14,25 @@ public partial class App : System.Windows.Application
 {
     private Forms.NotifyIcon? _trayIcon;
     private ClipboardSync? _clipboard;
+    private Mutex? _instanceMutex;
 
     internal SideCursorRuntime Runtime { get; private set; } = null!;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        // Only one SideCursor may run per user session. A second instance would
+        // open a second connection to the Mac, and the Mac would flap between
+        // the two peers on every reconnect — surfacing as a visible "reconnect"
+        // and dropped remote control. Reject any duplicate instance up front.
+        _instanceMutex = new Mutex(initiallyOwned: true, "SideCursor.Windows.SingleInstance", out var createdNew);
+        if (!createdNew)
+        {
+            _instanceMutex.Dispose();
+            _instanceMutex = null;
+            Shutdown();
+            return;
+        }
+
         // The manifest declares PerMonitorV2. This makes the process context
         // explicit for unpackaged launches before any WPF window is created.
         _ = NativeMethods.SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -64,6 +78,22 @@ public partial class App : System.Windows.Application
         }
 
         _clipboard?.Dispose();
+
+        if (_instanceMutex is not null)
+        {
+            try
+            {
+                _instanceMutex.ReleaseMutex();
+            }
+            catch (ApplicationException)
+            {
+                // Already released or not owned by this thread.
+            }
+
+            _instanceMutex.Dispose();
+            _instanceMutex = null;
+        }
+
         base.OnExit(e);
     }
 
