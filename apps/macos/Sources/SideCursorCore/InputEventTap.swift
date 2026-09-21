@@ -795,12 +795,14 @@ public enum MacVirtualKeyMapper {
         }
     }
 
-    /// Maps a horizontal three/four-finger swipe to the same Windows desktop
-    /// command as the Ctrl+Option+Left/Right hotkeys. Only left and right are
+    /// Maps a horizontal three/four-finger swipe to a Windows desktop command.
+    /// The direction is deliberately inverted from the trackpad's own movement:
+    /// swiping left switches to the desktop on the right, and swiping right
+    /// switches to the desktop on the left. Only left and right are
     /// gesture-driven; up/down remain keyboard-only.
     public static func remoteGestureCommand(deltaX: Double, hotkeys: RemoteHotkeys) -> String? {
-        if deltaX < 0, hotkeys.desktopLeftEnabled { return "desktop_left" }
-        if deltaX > 0, hotkeys.desktopRightEnabled { return "desktop_right" }
+        if deltaX < 0, hotkeys.desktopRightEnabled { return "desktop_right" }
+        if deltaX > 0, hotkeys.desktopLeftEnabled { return "desktop_left" }
         return nil
     }
 }
