@@ -44,9 +44,11 @@ older Python setup has not been overwritten.
    listening and then **Paired Windows companion is ready**. Windows should
    show **Ready** and an RTT.
 
-4. On Mac, grant SideCursor **Accessibility** in System Settings → Privacy &
-   Security → Accessibility, if it is not already granted. In **Display
-   Route**, choose only the upper external 4K display as the source.
+4. On Mac, grant SideCursor **Device Control and Data Access** in System
+   Settings → Privacy & Security if it is not already granted. This permission
+   was named **Accessibility** before macOS 27. If SideCursor also appears in
+   **Input Monitoring**, enable it there. In **Display Route**, choose only the
+   upper external 4K display as the source.
 
 5. On Windows, choose the Dell display in **Displays & input** and save it.
    The natural pointer scale is **1.00**; adjust it only after testing.

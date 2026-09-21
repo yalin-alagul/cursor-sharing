@@ -361,10 +361,13 @@ private struct SettingsView: View {
     private var inputTab: some View {
         Form {
             Section("Input capture") {
-                LabeledContent("Accessibility", value: model.session.accessibilityGranted ? "Granted" : "Required")
+                LabeledContent(AccessibilityPermission.settingsName, value: model.session.accessibilityGranted ? "Granted" : "Required")
                 LabeledContent("Event tap", value: model.session.isInputTapRunning ? "Running" : "Stopped")
                 Button("Request Accessibility permission") { model.session.requestAccessibilityAccess() }
                 Button("Refresh permission state") { model.session.refreshAccessibility() }
+                Text("On macOS 27, Apple renamed Accessibility to Device Control and Data Access. Enable SideCursor there; if SideCursor is listed under Input Monitoring too, enable it there as well.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("Control + Option + F8 is always local: it cancels entry or returns control to the Mac. It is never sent to Windows.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

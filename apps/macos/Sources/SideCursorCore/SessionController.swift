@@ -95,7 +95,7 @@ public final class SessionController: ObservableObject {
 
     public func requestAccessibilityAccess() {
         AccessibilityPermission.requestPrompt()
-        statusMessage = "Allow SideCursor in Privacy & Security → Accessibility, then return here."
+        statusMessage = "Allow SideCursor in Privacy & Security → \(AccessibilityPermission.settingsName), then return here."
     }
 
     public func startInputCapture() {
