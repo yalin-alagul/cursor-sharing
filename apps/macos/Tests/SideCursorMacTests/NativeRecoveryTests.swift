@@ -149,6 +149,15 @@ final class NativeRecoveryTests: XCTestCase {
         )
     }
 
+    func testBluetoothDeviceAddressRejectsServiceUUIDAndNormalizesRadioAddress() {
+        XCTAssertNil(BluetoothDeviceAddress.normalize(SideCursorBluetoothService.uuidString))
+        XCTAssertEqual(
+            BluetoothDeviceAddress.normalize("aa-bb-cc-dd-ee-ff"),
+            "AA:BB:CC:DD:EE:FF"
+        )
+        XCTAssertNil(BluetoothDeviceAddress.normalize("AA:BB:CC:DD:EE"))
+    }
+
     func testBluetoothServiceDiscoveryWhenExplicitHardwareProbeIsEnabled() {
         guard ProcessInfo.processInfo.environment["SIDECURSOR_RUN_BLUETOOTH_HARDWARE_TEST"] == "1",
               let address = ProcessInfo.processInfo.environment["SIDECURSOR_BLUETOOTH_ADDRESS"],

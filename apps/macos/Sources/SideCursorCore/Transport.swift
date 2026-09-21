@@ -356,6 +356,26 @@ public enum SideCursorBluetoothService {
     public static let uuid = UUID(uuidString: uuidString)!
 }
 
+/// A Bluetooth device address identifies the radio that hosts an RFCOMM
+/// service. It is deliberately distinct from `SideCursorBluetoothService`'s
+/// UUID, which identifies the service on that radio.
+public enum BluetoothDeviceAddress {
+    public static func normalize(_ rawValue: String) -> String? {
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: ":")
+        let octets = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard octets.count == 6 else { return nil }
+
+        var normalized: [String] = []
+        normalized.reserveCapacity(octets.count)
+        for octet in octets {
+            guard octet.count == 2, UInt8(octet, radix: 16) != nil else { return nil }
+            normalized.append(octet.uppercased())
+        }
+        return normalized.joined(separator: ":")
+    }
+}
+
 /// Resolves the RFCOMM channel from the device's SDP cache after asking the
 /// system to refresh it. IOBluetooth's target callback is delivered through a
 /// legacy run-loop path that is not reliable for a SwiftUI menu-bar agent, but

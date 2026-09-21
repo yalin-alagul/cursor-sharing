@@ -75,8 +75,9 @@ Bluetooth RFCOMM is manual and never silently replaces Tailscale:
 1. Pair the Mac and Windows computer in operating-system Bluetooth settings.
 2. In Windows, select **Bluetooth RFCOMM** and choose **Save and reconnect**.
    Its status must say **Bluetooth RFCOMM listener ready**.
-3. In Mac settings, select **Bluetooth RFCOMM** and enter the Windows
-   Bluetooth address.
+3. In Mac settings, select **Bluetooth RFCOMM** and enter the paired Windows
+   radio address in the form `AA:BB:CC:DD:EE:FF`—not the SideCursor service
+   UUID shown by the Windows app.
 4. Click **Save & reconnect** on Mac.
 
 The Windows app advertises a fixed SideCursor service UUID. macOS resolves the
