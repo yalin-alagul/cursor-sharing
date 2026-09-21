@@ -56,6 +56,12 @@ public final class SessionController: ObservableObject {
     private var activationObserver: NSObjectProtocol?
     private var permissionPollTimer: Timer?
     private var didAttemptFilteringUpgrade = false
+    /// Coalesced pointer delta awaiting its flush. A fast mouse produces many
+    /// motion samples per main-run-loop turn; summing them into one frame keeps
+    /// the send queue from backing up and turning into trailing pointer lag.
+    private var pendingMotionDX = 0
+    private var pendingMotionDY = 0
+    private var motionFlushScheduled = false
 
     public init(
         configurationStore: ConfigurationStoring = UserDefaultsConfigurationStore(),
@@ -260,16 +266,20 @@ public final class SessionController: ObservableObject {
         inputTap.stop()
         clipboard.stop()
         cursorController.forceRestore()
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
     }
 
-    public func toggleRemoteMode() {
+    /// Returns control to the Mac. It is deliberately not a toggle: it can only
+    /// leave a remote-owned state, never enter one. The panic hotkey and the
+    /// "Return control to Mac" button share this path so neither can surprise
+    /// the user by starting a remote session.
+    public func returnToLocalControl() {
         switch phase {
-        case .ready:
-            requestEntry(y: 0.5)
         case .entering, .remote, .returning, .recovering:
             recover(reason: "Remote mode toggled off locally")
-        case .connecting, .disconnected:
-            statusMessage = "Connect a paired Windows companion before entering remote mode."
+        case .ready, .connecting, .disconnected:
+            break
         }
     }
 
@@ -457,6 +467,16 @@ public final class SessionController: ObservableObject {
 
     private func requestEntry(y: Double) {
         guard phase == .ready, let peer, let route = currentRoute else { return }
+        // Never suppress input non-exclusively: if macOS handed us a
+        // listen-only tap (Input Monitoring not granted), entering Remote would
+        // forward to Windows while the Mac keyboard also stays live. Refuse the
+        // handoff and keep local control instead.
+        guard inputTap.isFiltering else {
+            let message = "Input capture is listen-only. Grant Input Monitoring so macOS can install a filtering tap, then try again."
+            lastError = message
+            statusMessage = message
+            return
+        }
         do {
             try machine.transition(.requestEntry)
             phase = machine.phase
@@ -557,13 +577,12 @@ public final class SessionController: ObservableObject {
             handoffDebug = String(format: "edge crossed at y=%.2f", y)
             requestEntry(y: y)
         case let .input(event):
-            guard phase == .remote else { return }
-            peer?.send(.input(scale(event)))
+            forwardInput(event)
         case let .command(name):
             guard phase == .remote else { return }
             peer?.send(.command(name: name))
         case .panicHotkey:
-            toggleRemoteMode()
+            returnToLocalControl()
         case let .tapFailure(reason):
             recover(reason: reason)
         case let .handoffProbe(x, y, deltaX, previousX, minX, maxX):
@@ -590,13 +609,37 @@ public final class SessionController: ObservableObject {
         )
     }
 
-    private func scale(_ event: NativeInputEvent) -> NativeInputEvent {
-        guard case let .pointer(dx, dy) = event else { return event }
-        let scale = configuration.pointerScale
-        return .pointer(
-            dx: Int((Double(dx) * scale).rounded()),
-            dy: Int((Double(dy) * scale).rounded())
-        )
+    /// Forwards a remote input event. Pointer motion is coalesced per
+    /// main-run-loop turn so a high-rate mouse never queues unbounded frames;
+    /// every other event (buttons, scroll, keys) flushes the pending motion
+    /// first so its ordering relative to the motion is preserved.
+    private func forwardInput(_ event: NativeInputEvent) {
+        guard phase == .remote else { return }
+        switch event {
+        case let .pointer(dx, dy):
+            let scale = configuration.pointerScale
+            pendingMotionDX += Int((Double(dx) * scale).rounded())
+            pendingMotionDY += Int((Double(dy) * scale).rounded())
+            if !motionFlushScheduled {
+                motionFlushScheduled = true
+                DispatchQueue.main.async { [weak self] in
+                    self?.flushMotion()
+                }
+            }
+        default:
+            flushMotion()
+            peer?.send(.input(event))
+        }
+    }
+
+    private func flushMotion() {
+        motionFlushScheduled = false
+        let dx = pendingMotionDX
+        let dy = pendingMotionDY
+        pendingMotionDX = 0
+        pendingMotionDY = 0
+        guard phase == .remote, peer != nil, dx != 0 || dy != 0 else { return }
+        peer?.send(.input(.pointer(dx: dx, dy: dy)))
     }
 
     private func sendLocalClipboard(_ text: String) {
@@ -611,6 +654,9 @@ public final class SessionController: ObservableObject {
         entryTimeout?.invalidate()
         entryTimeout = nil
         pendingEnterID = nil
+        pendingMotionDX = 0
+        pendingMotionDY = 0
+        motionFlushScheduled = false
         if phase != .recovering && phase != .disconnected {
             try? machine.transition(.recover)
             phase = machine.phase

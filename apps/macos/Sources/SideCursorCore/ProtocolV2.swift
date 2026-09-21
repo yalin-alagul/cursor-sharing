@@ -408,11 +408,18 @@ public struct ClientHandshake {
 /// authenticated data and must advance by one, preventing replay and re-order.
 public struct EncryptedFrameCodec {
     private let sessionKey: SymmetricKey
+    private let noncePrefix: Data
     private var nextOutboundSequence: UInt64 = 0
     private var lastInboundSequence: UInt64 = 0
 
     public init(sessionKey: SymmetricKey) {
         self.sessionKey = sessionKey
+        // A 4-byte random prefix scopes this connection's nonce space; the
+        // monotonic sequence fills the remaining 8 bytes. This keeps every
+        // nonce unique without a CSPRNG syscall on each frame, which matters at
+        // pointer-motion rates.
+        var generator = SystemRandomNumberGenerator()
+        self.noncePrefix = Data.uint32BE(UInt32(truncatingIfNeeded: generator.next()))
     }
 
     /// Returns the bytes after the uint32 big-endian length prefix.
@@ -423,7 +430,7 @@ public struct EncryptedFrameCodec {
         nextOutboundSequence += 1
         let sequence = nextOutboundSequence
         let sequenceData = Data.uint64BE(sequence)
-        let nonceData = try SecureRandom.bytes(count: 12)
+        let nonceData = noncePrefix + sequenceData
         let nonce = try ChaChaPoly.Nonce(data: nonceData)
         let sealed = try ChaChaPoly.seal(
             plaintext,

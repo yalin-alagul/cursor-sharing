@@ -451,7 +451,7 @@ public sealed class StrictSequenceWindow
 
     public void ValidateAndAdvance(ulong sequence)
     {
-        if (sequence == 0 || sequence != checked(_lastSequence + 1))
+        if (sequence == 0 || _lastSequence == ulong.MaxValue || sequence != _lastSequence + 1)
         {
             throw new ProtocolViolationException("Encrypted frame sequence is not exactly increasing.");
         }

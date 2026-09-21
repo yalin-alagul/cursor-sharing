@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Principal;
@@ -243,7 +244,7 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             {
                 break;
             }
-            catch (Exception exception) when (exception is IOException or SocketException or AuthenticationException or ProtocolViolationException or InputInjectionException or InvalidOperationException)
+            catch (Exception exception) when (exception is IOException or SocketException or AuthenticationException or ProtocolViolationException or InputInjectionException or InvalidOperationException or Win32Exception or ArgumentException)
             {
                 _diagnostics.Add($"Connection recovery: {exception.Message}");
                 _state.BeginRecovery($"Connection recovery: {exception.Message}");
