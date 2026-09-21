@@ -327,6 +327,10 @@ public final class InputEventTap {
     /// The panic hotkey's key code while it is held, so its key-up is swallowed
     /// rather than forwarded to Windows as an unmatched key-up.
     private var panicKeyCode: Int64?
+    /// Optional sink for timing diagnostics (for example the delay between a
+    /// remote return and the first local motion sample).
+    public var diagnosticLogger: ((String) -> Void)?
+    private var returnProbeStartedAt: Date?
 
     public init(
         gate: InputGate,
@@ -423,7 +427,18 @@ public final class InputEventTap {
         return owner.handle(type: type, event: event)
     }
 
+    public func beginReturnProbe() {
+        returnProbeStartedAt = Date()
+    }
+
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged,
+           let started = returnProbeStartedAt {
+            returnProbeStartedAt = nil
+            let milliseconds = Date().timeIntervalSince(started) * 1_000
+            diagnosticLogger?(String(format: "first local motion after return=%.1fms", milliseconds))
+        }
+
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             // The controller immediately recovers to local input.  Re-enable
             // the tap only to receive later local events; this is not cursor
