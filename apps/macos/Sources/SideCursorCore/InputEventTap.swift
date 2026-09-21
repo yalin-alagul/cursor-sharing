@@ -132,6 +132,9 @@ public final class InputEventTap {
     private static let swipeGestureKind: Int64 = 6
     /// A swipe accumulates tens of pixels of displacement, far above this.
     private static let gestureSwipeThreshold = 5.0
+    /// The Mac trackpad scrolls far too fast for Windows; forward a quarter of
+    /// each scroll delta.
+    private static let scrollSensitivity = 0.25
 
     private let gate: InputGate
     private let actionHandler: (InputTapAction) -> Void
@@ -146,6 +149,10 @@ public final class InputEventTap {
     private var gestureLastDy = 0.0
     private var gestureMaxDx = 0.0
     private var gestureMaxDy = 0.0
+    /// Fractional scroll remainder so four Mac notches become one Windows
+    /// notch (four times slower scrolling).
+    private var scrollRemainderH = 0.0
+    private var scrollRemainderV = 0.0
     /// True when macOS installed the tap as a filter (events can be
     /// suppressed).  A tap created before permission was granted is silently
     /// made listen-only, which lets local input leak during remote mode.
@@ -393,7 +400,10 @@ public final class InputEventTap {
             let vertical = Int(event.getIntegerValueField(.scrollWheelEventDeltaAxis1))
             let horizontal = Int(event.getIntegerValueField(.scrollWheelEventDeltaAxis2))
             if vertical != 0 || horizontal != 0 {
-                emit(.input(.scroll(horizontal: horizontal, vertical: vertical)))
+                let (outH, outV) = scaleScroll(horizontal: horizontal, vertical: vertical)
+                if outH != 0 || outV != 0 {
+                    emit(.input(.scroll(horizontal: outH, vertical: outV)))
+                }
             }
             return nil
         case .entering, .returning, .recovering:
@@ -401,6 +411,22 @@ public final class InputEventTap {
         case .local, .ready:
             return Unmanaged.passUnretained(event)
         }
+    }
+
+    /// Scales the scroll deltas down so the pointer on Windows scrolls at a
+    /// quarter of the Mac trackpad's rate. Fractional remainders are carried
+    /// across events so four input notches still produce one output notch, and
+    /// the remainder is discarded when the direction reverses.
+    private func scaleScroll(horizontal: Int, vertical: Int) -> (Int, Int) {
+        if horizontal == 0 || (horizontal > 0) != (scrollRemainderH > 0) { scrollRemainderH = 0 }
+        if vertical == 0 || (vertical > 0) != (scrollRemainderV > 0) { scrollRemainderV = 0 }
+        let scaledH = Double(horizontal) * Self.scrollSensitivity + scrollRemainderH
+        let scaledV = Double(vertical) * Self.scrollSensitivity + scrollRemainderV
+        let outH = Int(scaledH)
+        let outV = Int(scaledV)
+        scrollRemainderH = scaledH - Double(outH)
+        scrollRemainderV = scaledV - Double(outV)
+        return (outH, outV)
     }
 
     private func handleKey(_ type: CGEventType, event: CGEvent, snapshot: InputGateSnapshot) -> Unmanaged<CGEvent>? {
