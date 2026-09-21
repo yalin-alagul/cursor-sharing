@@ -174,9 +174,9 @@ public final class CursorController {
 
     /// Best-effort cleanup for process shutdown and error recovery.  A failed
     /// warp must never keep the cursor hidden or the mouse disassociated.
-    public func forceRestore(returnY: Double = 0.5) {
+    public func forceRestore(returnY: Double = 0.5, inset: Double = 24) {
         do {
-            try release(returnY: returnY)
+            try release(returnY: returnY, inset: inset)
         } catch {
             _ = platform.associateMouse()
             if didHideCursor {

@@ -110,7 +110,10 @@ final class SideCursorAppModel: ObservableObject {
     }
 
     func restartTransport() {
-        start()
+        guard started else {
+            start()
+            return
+        }
         session.stopTransport()
         session.startTransport()
     }
@@ -208,7 +211,7 @@ private struct StatusMenuView: View {
             }
             Button("Start or reconnect") { model.restartTransport() }
             Button("Return control to Mac") { model.returnControlToMac() }
-                .disabled(model.session.phase != .remote && model.session.phase != .entering && model.session.phase != .returning)
+                .disabled(model.session.phase != .remote && model.session.phase != .entering && model.session.phase != .returning && model.session.phase != .recovering)
             Divider()
             Button("Quit SideCursor") {
                 model.shutdown()
@@ -379,13 +382,13 @@ private struct SettingsView: View {
             }
 
             Section("Pointer, scroll, and remote hotkeys") {
-                Slider(value: pointerScaleBinding, in: 0.5...2.0, step: 0.05) { Text("Windows pointer scale") }
+                Slider(value: pointerScaleBinding, in: 0.1...4.0, step: 0.05) { Text("Windows pointer scale") }
                 Text("Scale: \(model.session.configuration.pointerScale, specifier: "%.2f") — default 1.00.")
                     .font(.caption)
                 Toggle("Control + Option + Left/Right: Windows virtual desktops", isOn: desktopHotkeyBinding)
                 Toggle("Control + Option + Up: Task View", isOn: taskViewHotkeyBinding)
                 Toggle("Control + Option + Down: Show Desktop", isOn: showDesktopHotkeyBinding)
-                Text("Two-finger vertical and horizontal scrolling is forwarded. Native three/four-finger gestures are intentionally not captured as remote input.")
+                Text("Two-finger scrolling is forwarded. A horizontal three/four-finger swipe becomes a Windows desktop switch; other three/four-finger gestures stay local.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

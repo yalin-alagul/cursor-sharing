@@ -133,7 +133,8 @@ public final class InputEventTap {
     /// A swipe accumulates tens of pixels of displacement, far above this.
     private static let gestureSwipeThreshold = 5.0
     /// The Mac trackpad scrolls far too fast for Windows; forward an eighth of
-    /// each scroll delta.
+    /// each scroll delta (eight Mac notches produce one Windows notch once the
+    /// remainder carry in `scaleScroll` is accounted for).
     private static let scrollSensitivity = 0.125
 
     private let gate: InputGate
@@ -149,8 +150,8 @@ public final class InputEventTap {
     private var gestureLastDy = 0.0
     private var gestureMaxDx = 0.0
     private var gestureMaxDy = 0.0
-    /// Fractional scroll remainder so four Mac notches become one Windows
-    /// notch (four times slower scrolling).
+    /// Fractional scroll remainder so eight Mac notches become one Windows
+    /// notch (an eighth of the local rate; see `scrollSensitivity`).
     private var scrollRemainderH = 0.0
     private var scrollRemainderV = 0.0
     /// True when macOS installed the tap as a filter (events can be
@@ -164,6 +165,9 @@ public final class InputEventTap {
     /// Key codes whose key-down was consumed as a remote command; their key-up
     /// is swallowed instead of being forwarded as an unmatched key-up.
     private var commandKeyCodes: Set<Int64> = []
+    /// The panic hotkey's key code while it is held, so its key-up is swallowed
+    /// rather than forwarded to Windows as an unmatched key-up.
+    private var panicKeyCode: Int64?
 
     public init(
         gate: InputGate,
@@ -241,6 +245,7 @@ public final class InputEventTap {
         runLoopSource = nil
         isFiltering = false
         commandKeyCodes.removeAll()
+        panicKeyCode = nil
         lastMotionLocation = nil
     }
 
@@ -261,7 +266,15 @@ public final class InputEventTap {
         }
 
         if type == .keyDown, isPanicHotkey(event) {
+            panicKeyCode = event.getIntegerValueField(.keyboardEventKeycode)
             emit(.panicHotkey)
+            return nil
+        }
+
+        if type == .keyUp,
+           let panicKeyCode,
+           event.getIntegerValueField(.keyboardEventKeycode) == panicKeyCode {
+            self.panicKeyCode = nil
             return nil
         }
 
@@ -328,7 +341,6 @@ public final class InputEventTap {
             guard gestureMaxDx > gestureMaxDy, gestureMaxDx >= Self.gestureSwipeThreshold else { break }
             if let command = MacVirtualKeyMapper.remoteGestureCommand(
                 deltaX: gestureLastDx,
-                deltaY: 0,
                 hotkeys: snapshot.hotkeys
             ) {
                 emit(.command(command))
@@ -413,9 +425,9 @@ public final class InputEventTap {
         }
     }
 
-    /// Scales the scroll deltas down so the pointer on Windows scrolls at a
-    /// quarter of the Mac trackpad's rate. Fractional remainders are carried
-    /// across events so four input notches still produce one output notch, and
+    /// Scales the scroll deltas down so the pointer on Windows scrolls at an
+    /// eighth of the Mac trackpad's rate. Fractional remainders are carried
+    /// across events so eight input notches still produce one output notch, and
     /// the remainder is discarded when the direction reverses.
     private func scaleScroll(horizontal: Int, vertical: Int) -> (Int, Int) {
         if horizontal == 0 || (horizontal > 0) != (scrollRemainderH > 0) { scrollRemainderH = 0 }
@@ -495,10 +507,6 @@ public final class InputEventTap {
         }
     }
 
-    private static func eventMask(for events: [CGEventType]) -> CGEventMask {
-        events.reduce(0) { result, event in result | (CGEventMask(1) << event.rawValue) }
-    }
-
     /// Asks the window server whether SideCursor's own session tap is a
     /// filtering tap.  A listen-only tap cannot delete events, so remote mode
     /// would leak local input even though everything else looks healthy.
@@ -556,6 +564,19 @@ public enum MacVirtualKeyMapper {
         120: .init(vk: 0x71), 122: .init(vk: 0x70),
         123: .init(vk: 0x25, extended: true), 124: .init(vk: 0x27, extended: true),
         125: .init(vk: 0x28, extended: true), 126: .init(vk: 0x26, extended: true),
+        // Numeric keypad. Without these, Mac keypad input was silently dropped
+        // because unmapped keys are suppressed in remote mode.
+        65: .init(vk: 0x6E),                        // keypad .
+        67: .init(vk: 0x6A),                        // keypad *
+        69: .init(vk: 0x6B),                        // keypad +
+        71: .init(vk: 0x0C),                        // keypad clear
+        75: .init(vk: 0x6F, extended: true),        // keypad /
+        76: .init(vk: 0x0D, extended: true),        // keypad enter
+        78: .init(vk: 0x6D),                        // keypad -
+        81: .init(vk: 0x92),                        // keypad =
+        82: .init(vk: 0x60), 83: .init(vk: 0x61), 84: .init(vk: 0x62), 85: .init(vk: 0x63),
+        86: .init(vk: 0x64), 87: .init(vk: 0x65), 88: .init(vk: 0x66), 89: .init(vk: 0x67),
+        91: .init(vk: 0x68), 92: .init(vk: 0x69),
     ]
 
     public static func map(keyCode: Int64) -> WindowsKeyMapping? { table[keyCode] }
@@ -574,7 +595,7 @@ public enum MacVirtualKeyMapper {
     /// Maps a horizontal three/four-finger swipe to the same Windows desktop
     /// command as the Ctrl+Option+Left/Right hotkeys. Only left and right are
     /// gesture-driven; up/down remain keyboard-only.
-    public static func remoteGestureCommand(deltaX: Double, deltaY: Double, hotkeys: RemoteHotkeys) -> String? {
+    public static func remoteGestureCommand(deltaX: Double, hotkeys: RemoteHotkeys) -> String? {
         if deltaX < 0, hotkeys.desktopLeftEnabled { return "desktop_left" }
         if deltaX > 0, hotkeys.desktopRightEnabled { return "desktop_right" }
         return nil

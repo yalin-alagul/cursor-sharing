@@ -24,10 +24,8 @@ public final class SessionController: ObservableObject {
     }
 
     public var displays: [DisplayDescriptor] { DisplayCatalog.activeDisplays() }
-    public var selectedRoute: EdgeRoute? { currentRoute }
     public var isInputTapRunning: Bool { inputTap.isRunning }
     public var isInputTapFiltering: Bool { inputTap.isFiltering }
-    public var hasPairingCode: Bool { (try? pairingSecretStore.load(account: configuration.pairingAccount)) != nil }
 
     /// Short guard after a return so the release warp cannot immediately
     /// re-trigger a handoff, without making back-and-forth crossings feel
@@ -101,12 +99,9 @@ public final class SessionController: ObservableObject {
         refreshAccessibility()
         refreshRoute()
         refreshGestureProfileStatus()
-        // The HID event tap now drops gesture events only while a remote
-        // session owns input, so a previously applied persistent profile is
-        // no longer needed.  Undo it so normal local gestures come back.
-        if gestureProfileStatus != .notApplied, (try? gestureCompatibility.restore()) == true {
-            gestureProfileStatus = .notApplied
-        }
+        // An applied Gesture Compatibility Profile is intentionally persistent,
+        // matching the Settings copy ("Sign out or restart after applying or
+        // restoring").  It is undone only when the user chooses Restore.
         // A rebuilt ad-hoc-signed app loses its Accessibility grant.  Ask once
         // at launch so SideCursor is listed for the user to enable, then start
         // the event tap as soon as the grant appears.
@@ -135,7 +130,9 @@ public final class SessionController: ObservableObject {
             ) { [weak self] _ in
                 guard let self else { return }
                 Task { @MainActor [self] in
-                    self.requestMissingPermissions()
+                    // Only react to grants the user has already made; do not
+                    // re-prompt on every activation. The launch-time prompt and
+                    // the Settings "Request permission" button cover prompting.
                     self.refreshAccessibilityAndCapture()
                 }
             }
@@ -156,7 +153,14 @@ public final class SessionController: ObservableObject {
     /// just become available.  Safe to call repeatedly.
     public func refreshAccessibilityAndCapture() {
         let wasGranted = accessibilityGranted
+        let wasMonitoring = inputMonitoringGranted
         refreshAccessibility()
+        let permissionChanged = accessibilityGranted != wasGranted || inputMonitoringGranted != wasMonitoring
+        if permissionChanged {
+            // A fresh grant must re-attempt the filtering upgrade even if an
+            // earlier attempt ran before Input Monitoring was available.
+            didAttemptFilteringUpgrade = false
+        }
         if accessibilityGranted, !inputTap.isRunning {
             startInputCapture()
         } else if accessibilityGranted, inputMonitoringGranted,
@@ -166,7 +170,18 @@ public final class SessionController: ObservableObject {
             didAttemptFilteringUpgrade = true
             upgradeTapToFiltering()
         }
-        if accessibilityGranted != wasGranted {
+        if permissionChanged {
+            // Losing the ability to suppress local input while Windows owns it
+            // is a mandatory recovery condition: macOS would otherwise stop
+            // honoring our event suppression while the session still believed
+            // input was remote.  `stopInputCapture()` releases Windows input
+            // and returns control to the Mac.
+            let lostRequiredPermission = (wasGranted && !accessibilityGranted)
+                || (wasMonitoring && !inputMonitoringGranted)
+            if lostRequiredPermission, phase == .entering || phase == .remote || phase == .returning {
+                stopInputCapture()
+                return
+            }
             synchronizeGate()
         }
     }
@@ -282,7 +297,7 @@ public final class SessionController: ObservableObject {
         stopTransport(transitionToDisconnected: true)
         inputTap.stop()
         clipboard.stop()
-        cursorController.forceRestore()
+        cursorController.forceRestore(inset: configuration.returnInset)
         permissionPollTimer?.invalidate()
         permissionPollTimer = nil
     }
@@ -584,7 +599,9 @@ public final class SessionController: ObservableObject {
         case let .command(name):
             lastError = "Ignored unexpected command from Windows: \(name)"
         case .releaseAll:
-            recover(reason: "Windows released the remote session")
+            // A Windows-initiated release is a normal end to remote mode, not a
+            // failure, so it must not light up the Diagnostics error text.
+            recover(reason: "Windows released the remote session", isError: false)
         case let .clipboard(origin, text):
             guard configuration.clipboardEnabled,
                   origin != configuration.pairingAccount,
@@ -594,11 +611,18 @@ public final class SessionController: ObservableObject {
         case let .ping(sentAtMs):
             peer?.send(.pong(sentAtMs: sentAtMs))
         case let .pong(sentAtMs):
+            // `sentAtMs` is peer-supplied.  Subtract with overflow reporting so
+            // a hostile or buggy value (for example Int64.min) cannot trap.
             let now = Int64(Date().timeIntervalSince1970 * 1_000)
-            roundTripMilliseconds = max(0, Double(now - sentAtMs))
+            let (elapsed, overflow) = now.subtractingReportingOverflow(sentAtMs)
+            if !overflow, elapsed >= 0 {
+                roundTripMilliseconds = Double(elapsed)
+            }
             lastPongAt = Date()
-        case .enterRequest:
-            peer?.send(.enterReject(id: UUID(), reason: "Mac is source-only"))
+        case let .enterRequest(request):
+            // Echo the request id so the peer can correlate the rejection, per
+            // shared/protocol.md.
+            peer?.send(.enterReject(id: request.id, reason: "Mac is source-only"))
         }
     }
 
@@ -658,7 +682,7 @@ public final class SessionController: ObservableObject {
         peer?.send(.clipboard(origin: configuration.pairingAccount, text: text))
     }
 
-    private func recover(reason: String) {
+    private func recover(reason: String, isError: Bool = true) {
         entryTimeout?.invalidate()
         entryTimeout = nil
         pendingEnterID = nil
@@ -668,7 +692,7 @@ public final class SessionController: ObservableObject {
             synchronizeGate()
         }
         peer?.send(.releaseAll(reason: reason))
-        cursorController.forceRestore()
+        cursorController.forceRestore(inset: configuration.returnInset)
         inputGate.blockNewHandoffs(for: Self.handoffReentryDelay)
         if phase == .recovering {
             try? machine.transition(.localInputRestored)
@@ -679,7 +703,7 @@ public final class SessionController: ObservableObject {
             phase = machine.phase
         }
         synchronizeGate()
-        lastError = reason
+        lastError = isError ? reason : nil
         statusMessage = peer == nil && isListening
             ? "Waiting for Windows after recovery: \(reason)"
             : "Local Mac control restored: \(reason)"
@@ -707,7 +731,7 @@ public final class SessionController: ObservableObject {
             oldPeer?.send(.releaseAll(reason: "Mac transport stopped"))
         }
         oldPeer?.close()
-        cursorController.forceRestore()
+        cursorController.forceRestore(inset: configuration.returnInset)
         inputGate.blockNewHandoffs(for: Self.handoffReentryDelay)
         if shouldTransitionToDisconnected {
             transitionToDisconnected()
