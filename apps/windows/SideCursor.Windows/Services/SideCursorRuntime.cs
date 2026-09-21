@@ -246,7 +246,7 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             }
             catch (Exception exception) when (exception is IOException or SocketException or AuthenticationException or ProtocolViolationException or InputInjectionException or InvalidOperationException or Win32Exception or ArgumentException)
             {
-                _diagnostics.Add($"Connection recovery: {exception.Message}");
+                _diagnostics.Add($"Connection recovery [{exception.GetType().Name}]: {exception.Message}");
                 _state.BeginRecovery($"Connection recovery: {exception.Message}");
                 ReleaseInputSafely("connection failure");
                 _state.FinishRecovery(peerStillConnected: false, "Disconnected; retrying");

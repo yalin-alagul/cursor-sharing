@@ -193,6 +193,11 @@ public static class PairingSecretParser
 
 public sealed class DiagnosticLog
 {
+    private static readonly string LogFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "SideCursor",
+        "diagnostics.log");
+
     private readonly object _gate = new();
     private readonly Queue<string> _entries = new();
     private const int Capacity = 160;
@@ -200,12 +205,24 @@ public sealed class DiagnosticLog
     public void Add(string message)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        var line = $"{DateTimeOffset.Now:HH:mm:ss.fff}  {message}";
         lock (_gate)
         {
-            _entries.Enqueue($"{DateTimeOffset.Now:HH:mm:ss}  {message}");
+            _entries.Enqueue(line);
             while (_entries.Count > Capacity)
             {
                 _entries.Dequeue();
+            }
+
+            // Keep a persistent copy for remote diagnosis of transient
+            // reconnects that are otherwise invisible in the in-memory UI log.
+            try
+            {
+                File.AppendAllText(LogFilePath, line + Environment.NewLine);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Logging must never take down the app.
             }
         }
     }

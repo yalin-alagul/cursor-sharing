@@ -275,7 +275,10 @@ public sealed class WindowsSession : IDisposable
     private void HandleReturnAcknowledgement(JsonElement message)
     {
         var id = ReadRequestId(message);
-        if (!string.Equals(id, _returnRequestId, StringComparison.Ordinal))
+        // GUIDs are case-insensitive by value. Windows emits the id in
+        // lowercase "D" form while the Mac echoes it back as an uppercase
+        // uuidString, so an ordinal comparison rejects every valid return.
+        if (!string.Equals(id, _returnRequestId, StringComparison.OrdinalIgnoreCase))
         {
             throw new ProtocolViolationException("return_ack did not match the outstanding Windows return request.");
         }
