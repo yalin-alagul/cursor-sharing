@@ -332,7 +332,20 @@ public sealed class WindowsSession : IDisposable
             return;
         }
 
-        var text = RequiredString(message, "text");
+        // Clipboard text may legitimately be empty (the remote clipboard was
+        // cleared). RequiredString rejects empty strings, which used to turn a
+        // benign clear into a protocol violation and force a reconnect.
+        if (!message.TryGetProperty("text", out var textValue) || textValue.ValueKind != JsonValueKind.String)
+        {
+            throw new ProtocolViolationException("Message property 'text' is required.");
+        }
+
+        var text = textValue.GetString()!;
+        if (text.Length == 0)
+        {
+            return;
+        }
+
         if (Encoding.UTF8.GetByteCount(text) > Math.Min(_configuration.ClipboardMaximumBytes, V2Protocol.MaximumClipboardBytes))
         {
             throw new ProtocolViolationException("Clipboard text exceeds the configured v2 limit.");
@@ -422,7 +435,10 @@ public sealed class WindowsSession : IDisposable
                 return;
             }
 
-            await SendAsync(new { type = "clipboard", origin = _configuration.DeviceId, text }, CancellationToken.None).ConfigureAwait(false);
+            // Bound the send so a wedged socket cannot hold the send gate open
+            // forever and silently stop clipboard sync.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await SendAsync(new { type = "clipboard", origin = _configuration.DeviceId, text }, timeout.Token).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException or OperationCanceledException)
         {
@@ -462,14 +478,12 @@ public sealed class WindowsSession : IDisposable
             ReturnEdgeInsetPixels = source.ReturnEdgeInsetPixels,
             ClipboardEnabled = source.ClipboardEnabled,
             ClipboardMaximumBytes = source.ClipboardMaximumBytes,
-            BluetoothReadyOnly = source.BluetoothReadyOnly,
             Commands = new CommandBindings
             {
                 DesktopLeft = source.Commands.DesktopLeft,
                 DesktopRight = source.Commands.DesktopRight,
                 TaskView = source.Commands.TaskView,
                 ShowDesktop = source.Commands.ShowDesktop,
-                CloseTaskView = source.Commands.CloseTaskView,
             },
         };
     }

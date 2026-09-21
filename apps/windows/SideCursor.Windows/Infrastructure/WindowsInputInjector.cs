@@ -36,17 +36,6 @@ public sealed class WindowsInputInjector
     private bool _returnRequested;
     private DateTime _lastTargetCheckUtc = DateTime.MinValue;
 
-    public bool IsRemote
-    {
-        get
-        {
-            lock (_gate)
-            {
-                return _targetDisplay is not null;
-            }
-        }
-    }
-
     public DisplayDescriptor EnterRemote(SideCursorConfig configuration, string sourceDisplayId, int sourceWidth, int sourceHeight, double normalizedY)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -58,7 +47,12 @@ public sealed class WindowsInputInjector
         lock (_gate)
         {
             var target = DisplayCatalog.ResolveTarget(configuration);
-            _motionMapper.Configure(sourceWidth, sourceHeight, target.Bounds, configuration.PointerCalibration);
+            // macOS owns the user-facing pointer-speed control (`pointerScale`).
+            // Windows applies only the source-to-target resolution ratio; the
+            // legacy PointerCalibration setting is retained for configuration
+            // compatibility but must not multiply on top, which double-scaled
+            // pointer motion when both controls were raised.
+            _motionMapper.Configure(sourceWidth, sourceHeight, target.Bounds, calibration: 1.0);
             // Keep a few pixels between the entry point and the return
             // boundary; otherwise the pointer starts essentially on the return
             // edge and a tiny leftward nudge sends control straight back.
@@ -78,13 +72,7 @@ public sealed class WindowsInputInjector
         lock (_gate)
         {
             var target = RequireTarget();
-            // Enumerating monitors on every pointer sample made remote movement
-            // laggy; re-validate the target display at most once per second.
-            if (DateTime.UtcNow - _lastTargetCheckUtc > TimeSpan.FromSeconds(1))
-            {
-                _lastTargetCheckUtc = DateTime.UtcNow;
-                VerifyTargetStillPresent(target);
-            }
+            EnsureTargetStillPresent(target);
             var relative = _motionMapper.Translate(sourceDx, sourceDy);
             var current = ReadCursorPosition();
             var returnPlan = ReturnEdgePlanner.Plan(current, relative, target.Bounds, _returnEdgeInsetPixels);
@@ -109,7 +97,7 @@ public sealed class WindowsInputInjector
         ArgumentException.ThrowIfNullOrWhiteSpace(button);
         lock (_gate)
         {
-            _ = RequireTarget();
+            EnsureTargetStillPresent(RequireTarget());
             var normalized = button.ToLowerInvariant();
             var flags = (normalized, down) switch
             {
@@ -137,7 +125,7 @@ public sealed class WindowsInputInjector
     {
         lock (_gate)
         {
-            _ = RequireTarget();
+            EnsureTargetStillPresent(RequireTarget());
             if (Math.Abs(vertical) > double.Epsilon)
             {
                 SendMouse(0, 0, ToWheelDelta(vertical), NativeMethods.MouseeventfWheel);
@@ -159,7 +147,7 @@ public sealed class WindowsInputInjector
 
         lock (_gate)
         {
-            _ = RequireTarget();
+            EnsureTargetStillPresent(RequireTarget());
             SendKey(virtualKey, down, extended);
             var pressedKey = new PressedKey(virtualKey, extended);
             if (down)
@@ -179,7 +167,7 @@ public sealed class WindowsInputInjector
         ArgumentNullException.ThrowIfNull(commandBindings);
         lock (_gate)
         {
-            _ = RequireTarget();
+            EnsureTargetStillPresent(RequireTarget());
             var binding = commandBindings.GetForCommand(command)
                 ?? throw new InputInjectionException($"Unsupported remote command '{command}'.");
             if (!HotkeyChord.TryParse(binding, out var chord))
@@ -263,6 +251,24 @@ public sealed class WindowsInputInjector
     private DisplayDescriptor RequireTarget()
     {
         return _targetDisplay ?? throw new InputInjectionException("Windows input was received outside an acknowledged remote session.");
+    }
+
+    /// <summary>
+    /// Re-checks the target display at most once per second. Enumerating
+    /// monitors on every input sample made remote movement laggy, but checking
+    /// only during pointer motion meant a keyboard-only or click-only session
+    /// kept injecting into a display that had already been unplugged. Calling
+    /// this from every injection path closes that gap while staying throttled.
+    /// </summary>
+    private void EnsureTargetStillPresent(DisplayDescriptor target)
+    {
+        if (DateTime.UtcNow - _lastTargetCheckUtc <= TimeSpan.FromSeconds(1))
+        {
+            return;
+        }
+
+        _lastTargetCheckUtc = DateTime.UtcNow;
+        VerifyTargetStillPresent(target);
     }
 
     private static void VerifyTargetStillPresent(DisplayDescriptor target)

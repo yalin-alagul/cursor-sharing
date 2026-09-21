@@ -43,11 +43,33 @@ public sealed class ConfigurationStore
             return new SideCursorConfig();
         }
 
-        var json = File.ReadAllText(_paths.ConfigurationPath, Encoding.UTF8);
-        var configuration = JsonSerializer.Deserialize<SideCursorConfig>(json, JsonOptions)
-            ?? throw new InvalidDataException("SideCursor settings file is empty or malformed.");
-        configuration.Normalize();
-        return configuration;
+        try
+        {
+            var json = File.ReadAllText(_paths.ConfigurationPath, Encoding.UTF8);
+            var configuration = JsonSerializer.Deserialize<SideCursorConfig>(json, JsonOptions)
+                ?? throw new InvalidDataException("SideCursor settings file is empty or malformed.");
+            configuration.Normalize();
+            return configuration;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            // A single corrupt or unreadable settings file must never brick
+            // startup. Keep a copy for diagnosis and fall back to defaults.
+            TryBackUpCorruptConfiguration();
+            return new SideCursorConfig();
+        }
+    }
+
+    private void TryBackUpCorruptConfiguration()
+    {
+        try
+        {
+            File.Copy(_paths.ConfigurationPath, _paths.ConfigurationPath + ".corrupt", overwrite: true);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Best-effort only; startup must still proceed.
+        }
     }
 
     public void Save(SideCursorConfig configuration)
@@ -151,12 +173,12 @@ public static class PairingSecretParser
         }
 
         CryptographicOperations.ZeroMemory(decoded);
-        if (normalized.Length is < 16 or > 512)
-        {
-            throw new ArgumentException("A textual pairing code must contain 16 to 512 characters.", nameof(pairingCode));
-        }
-
-        return SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        // macOS requires the exact 32-byte base64url secret. Hashing an
+        // arbitrary passphrase here used to "succeed" on Windows but could
+        // never pair, so reject anything that is not the real code.
+        throw new ArgumentException(
+            "The pairing code must be the 32-byte base64url secret shown by the Mac.",
+            nameof(pairingCode));
     }
 
     private static bool TryDecodeBase64Url(string value, out byte[] decoded)

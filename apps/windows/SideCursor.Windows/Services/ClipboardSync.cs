@@ -63,13 +63,18 @@ public sealed class ClipboardSync : IDisposable
         ArgumentNullException.ThrowIfNull(text);
         if (!_dispatcher.CheckAccess())
         {
-            _dispatcher.Invoke(() => ApplyRemoteText(text));
+            // Never block the transport/receive thread on the UI dispatcher.
+            // The UI thread can be waiting on that same connection during
+            // shutdown, which would deadlock the app on exit.
+            _dispatcher.BeginInvoke(() => ApplyRemoteText(text));
             return;
         }
 
         VerifyDispatcher();
-        if (!CanSync(text))
+        if (text.Length == 0 || !CanSync(text))
         {
+            // Empty text means the remote clipboard was cleared; there is
+            // nothing to paste, so leave the local clipboard untouched.
             return;
         }
 

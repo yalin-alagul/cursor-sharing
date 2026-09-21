@@ -31,7 +31,6 @@ public partial class MainWindow : Window
             SelectTransport(configuration.Transport);
             PeerHostText.Text = configuration.PeerHost;
             PeerPortText.Text = configuration.PeerPort.ToString(CultureInfo.InvariantCulture);
-            PointerCalibrationSlider.Value = configuration.PointerCalibration;
             ReturnEdgeInsetText.Text = configuration.ReturnEdgeInsetPixels.ToString(CultureInfo.InvariantCulture);
             ClipboardEnabledCheck.IsChecked = configuration.ClipboardEnabled;
             ClipboardMaximumText.Text = configuration.ClipboardMaximumBytes.ToString(CultureInfo.InvariantCulture);
@@ -56,7 +55,6 @@ public partial class MainWindow : Window
         finally
         {
             _loading = false;
-            UpdateCalibrationText();
         }
     }
 
@@ -154,9 +152,16 @@ public partial class MainWindow : Window
         BluetoothSettingsPanel.Visibility = isTcp ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    private void OnPointerCalibrationChanged(object sender, RoutedPropertyChangedEventArgs<double> eventArgs)
+    private void OnReleaseInputClick(object sender, RoutedEventArgs eventArgs)
     {
-        UpdateCalibrationText();
+        try
+        {
+            _runtime.ReleaseInputNow();
+        }
+        catch (Exception exception)
+        {
+            ShowError(exception);
+        }
     }
 
     private void OnRuntimeStatusChanged(object? sender, RuntimeSnapshot snapshot)
@@ -222,7 +227,6 @@ public partial class MainWindow : Window
         configuration.PeerHost = PeerHostText.Text.Trim();
         configuration.PeerPort = port;
         configuration.TargetDisplayId = selectedDisplay.StableId;
-        configuration.PointerCalibration = PointerCalibrationSlider.Value;
         configuration.ReturnEdgeInsetPixels = returnInset;
         configuration.ClipboardEnabled = ClipboardEnabledCheck.IsChecked == true;
         configuration.ClipboardMaximumBytes = clipboardMaximum;
@@ -278,14 +282,6 @@ public partial class MainWindow : Window
         };
         lines.AddRange(_runtime.Diagnostics);
         DiagnosticsText.Text = string.Join(Environment.NewLine, lines);
-    }
-
-    private void UpdateCalibrationText()
-    {
-        if (PointerCalibrationValue is not null)
-        {
-            PointerCalibrationValue.Text = PointerCalibrationSlider.Value.ToString("F2", CultureInfo.InvariantCulture);
-        }
     }
 
     private void OnClosing(object? sender, CancelEventArgs eventArgs)

@@ -29,6 +29,11 @@ public partial class App : System.Windows.Application
         {
             _instanceMutex.Dispose();
             _instanceMutex = null;
+            System.Windows.MessageBox.Show(
+                "SideCursor is already running. Look for its tray icon near the clock.",
+                "SideCursor",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             Shutdown();
             return;
         }
@@ -123,8 +128,8 @@ public partial class App : System.Windows.Application
     {
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open SideCursor", null, (_, _) => Dispatcher.Invoke(ShowMainWindow));
-        menu.Items.Add("Reconnect", null, async (_, _) => await Runtime.ReconnectAsync().ConfigureAwait(false));
-        menu.Items.Add("Return control to Mac", null, async (_, _) => await Runtime.RequestLocalReturnAsync().ConfigureAwait(false));
+        menu.Items.Add("Reconnect", null, (_, _) => RunTrayActionAsync(Runtime.ReconnectAsync));
+        menu.Items.Add("Return control to Mac", null, (_, _) => RunTrayActionAsync(Runtime.RequestLocalReturnAsync));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Dispatcher.Invoke(ExitApplication));
 
@@ -136,6 +141,27 @@ public partial class App : System.Windows.Application
             ContextMenuStrip = menu,
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(ShowMainWindow);
+    }
+
+    /// <summary>
+    /// Runs a tray action from the WinForms threadpool callback. Without the
+    /// try/catch an exception from an <c>async void</c> handler crashes the
+    /// process; instead it is surfaced to the user.
+    /// </summary>
+    private async void RunTrayActionAsync(Func<Task> action)
+    {
+        try
+        {
+            await action().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _ = Dispatcher.BeginInvoke(() => System.Windows.MessageBox.Show(
+                $"SideCursor could not complete the action: {exception.Message}",
+                "SideCursor",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning));
+        }
     }
 
     private void OnRuntimeStatusChanged(object? sender, Core.RuntimeSnapshot snapshot)
