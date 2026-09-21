@@ -533,7 +533,12 @@ public final class SessionController: ObservableObject {
                 phase = machine.phase
                 synchronizeGate()
                 try cursorController.release(returnY: y, inset: configuration.returnInset)
-                inputGate.blockNewHandoffs(for: Self.handoffReentryDelay)
+                // The return inset already parks the pointer a few pixels
+                // inside the source display, and the release warp moves left,
+                // so it cannot re-trigger a handoff. Do not add a re-entry
+                // delay here: the connection stays up in Ready and remote mode
+                // must be re-enterable the instant the pointer reaches the far
+                // right edge again.
                 peer?.send(.returnAck(id: id))
                 try machine.transition(.returnAcknowledged)
                 phase = machine.phase
