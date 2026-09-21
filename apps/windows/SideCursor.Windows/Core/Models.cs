@@ -37,6 +37,13 @@ public sealed class SideCursorConfig
     /// pointer-speed control, and applying this on top double-scaled motion.
     /// </summary>
     public double PointerCalibration { get; set; } = 1.0;
+    /// <summary>
+    /// Inject pointer motion as absolute virtual-desktop coordinates so it
+    /// bypasses Windows pointer acceleration ("Enhance pointer precision").
+    /// This gives 1:1, predictable movement and makes the return-edge math
+    /// exact. Disable to fall back to accelerated relative motion.
+    /// </summary>
+    public bool AbsolutePointer { get; set; } = true;
     public int ReturnEdgeInsetPixels { get; set; } = 1;
     public bool ClipboardEnabled { get; set; } = true;
     public int ClipboardMaximumBytes { get; set; } = MaximumClipboardBytes;

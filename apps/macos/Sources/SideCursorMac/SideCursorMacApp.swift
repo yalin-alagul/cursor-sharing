@@ -385,6 +385,16 @@ private struct SettingsView: View {
                 Slider(value: pointerScaleBinding, in: 0.1...4.0, step: 0.05) { Text("Windows pointer scale") }
                 Text("Scale: \(model.session.configuration.pointerScale, specifier: "%.2f") — default 1.00.")
                     .font(.caption)
+                Stepper(value: motionCoalesceBinding, in: 0...16, step: 1) {
+                    Text("Motion smoothing: \(model.session.configuration.motionCoalesceMilliseconds) ms")
+                }
+                Text("0 sends every pointer sample immediately (lowest latency). 4 ms groups high-polling mice into at most 250 samples/second for smoother, steadier motion.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Slider(value: scrollScaleBinding, in: 0.05...0.5, step: 0.05) { Text("Windows scroll speed") }
+                Text("Scroll: \(model.session.configuration.scrollScale * 100, specifier: "%.0f")% of the Mac rate — default 12% (one eighth).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("Control + Option + Left/Right: Windows virtual desktops", isOn: desktopHotkeyBinding)
                 Toggle("Control + Option + Up: Task View", isOn: taskViewHotkeyBinding)
                 Toggle("Control + Option + Down: Show Desktop", isOn: showDesktopHotkeyBinding)
@@ -420,6 +430,7 @@ private struct SettingsView: View {
                 )
                 LabeledContent("Source display", value: model.session.configuration.sourceDisplayID ?? "Not selected")
                 LabeledContent("Handoff", value: model.session.handoffDebug ?? "—")
+                LabeledContent("Input (sent, merged)", value: model.session.inputMetricsText)
                 Text(model.session.statusMessage).fixedSize(horizontal: false, vertical: true)
                 if let error = model.session.lastError {
                     Text(error).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
@@ -499,6 +510,20 @@ private struct SettingsView: View {
         Binding(
             get: { model.session.configuration.pointerScale },
             set: { value in model.mutateConfiguration { $0.pointerScale = value } }
+        )
+    }
+
+    private var motionCoalesceBinding: Binding<Int> {
+        Binding(
+            get: { model.session.configuration.motionCoalesceMilliseconds },
+            set: { value in model.mutateConfiguration { $0.motionCoalesceMilliseconds = value } }
+        )
+    }
+
+    private var scrollScaleBinding: Binding<Double> {
+        Binding(
+            get: { model.session.configuration.scrollScale },
+            set: { value in model.mutateConfiguration { $0.scrollScale = value } }
         )
     }
 

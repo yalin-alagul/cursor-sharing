@@ -31,6 +31,7 @@ public partial class MainWindow : Window
             SelectTransport(configuration.Transport);
             PeerHostText.Text = configuration.PeerHost;
             PeerPortText.Text = configuration.PeerPort.ToString(CultureInfo.InvariantCulture);
+            AbsolutePointerCheck.IsChecked = configuration.AbsolutePointer;
             ReturnEdgeInsetText.Text = configuration.ReturnEdgeInsetPixels.ToString(CultureInfo.InvariantCulture);
             ClipboardEnabledCheck.IsChecked = configuration.ClipboardEnabled;
             ClipboardMaximumText.Text = configuration.ClipboardMaximumBytes.ToString(CultureInfo.InvariantCulture);
@@ -227,6 +228,7 @@ public partial class MainWindow : Window
         configuration.PeerHost = PeerHostText.Text.Trim();
         configuration.PeerPort = port;
         configuration.TargetDisplayId = selectedDisplay.StableId;
+        configuration.AbsolutePointer = AbsolutePointerCheck.IsChecked == true;
         configuration.ReturnEdgeInsetPixels = returnInset;
         configuration.ClipboardEnabled = ClipboardEnabledCheck.IsChecked == true;
         configuration.ClipboardMaximumBytes = clipboardMaximum;

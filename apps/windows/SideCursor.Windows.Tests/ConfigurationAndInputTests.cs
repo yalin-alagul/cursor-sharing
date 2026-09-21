@@ -14,6 +14,12 @@ public sealed class ConfigurationAndInputTests
     }
 
     [Fact]
+    public void AbsolutePointerIsOnByDefaultForUnacceleratedMotion()
+    {
+        Assert.True(new SideCursorConfig().AbsolutePointer);
+    }
+
+    [Fact]
     public void PairingParserPreservesBase64UrlThirtyTwoByteSecret()
     {
         var expected = RandomNumberGenerator.GetBytes(32);

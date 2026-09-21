@@ -15,6 +15,7 @@ public final class SessionController: ObservableObject {
     @Published public private(set) var inputMonitoringGranted = false
     @Published public private(set) var gestureProfileStatus: GestureProfileStatus = .notApplied
     @Published public private(set) var handoffDebug: String?
+    @Published public private(set) var inputMetricsText = "—"
     @Published public var configuration: SideCursorConfiguration {
         didSet {
             configurationStore.save(configuration)
@@ -38,7 +39,14 @@ public final class SessionController: ObservableObject {
     private let clipboard: ClipboardMonitor
     private let gestureCompatibility: GestureCompatibilityManager
     private let inputGate = InputGate()
-    private lazy var inputTap = InputEventTap(gate: inputGate) { [weak self] action in
+    private let inputQueue = DispatchQueue(label: "com.yalinalagul.sidecursor.input", qos: .userInteractive)
+    private let remoteInput: RemoteInputSink
+    private lazy var inputTap = InputEventTap(
+        gate: inputGate,
+        inputQueue: inputQueue,
+        inputForwarder: { [remoteInput = self.remoteInput] event in remoteInput.forward(event) },
+        commandForwarder: { [remoteInput = self.remoteInput] name in remoteInput.forwardCommand(name) }
+    ) { [weak self] action in
         self?.handleInputAction(action)
     }
     private var machine = SessionMachine()
@@ -90,6 +98,7 @@ public final class SessionController: ObservableObject {
         self.cursorController = cursorController
         self.clipboard = clipboard
         self.gestureCompatibility = gestureCompatibility
+        self.remoteInput = RemoteInputSink(inputQueue: inputQueue)
         configuration = configurationStore.load()
         clipboard.maximumBytes = configuration.clipboardMaximumBytes
         refreshRoute()
@@ -208,8 +217,14 @@ public final class SessionController: ObservableObject {
                 // Never request from the background; only react to grants the
                 // user has already made.
                 self.refreshAccessibilityAndCapture()
+                self.refreshInputMetrics()
             }
         }
+    }
+
+    private func refreshInputMetrics() {
+        let metrics = remoteInput.metrics()
+        inputMetricsText = "\(metrics.pointerEventsSent) pointer, \(metrics.otherEventsSent) other, \(metrics.pointerEventsMerged) merged"
     }
 
     public func refreshAccessibility() {
@@ -746,7 +761,20 @@ public final class SessionController: ObservableObject {
     }
 
     private func synchronizeGate() {
-        inputGate.update(phase: phase, route: currentRoute, hotkeys: configuration.remoteHotkeys)
+        inputGate.update(
+            phase: phase,
+            route: currentRoute,
+            hotkeys: configuration.remoteHotkeys,
+            scrollScale: configuration.scrollScale
+        )
+        // Mirror the state needed by the off-main input hot path.  Input events
+        // are forwarded on a dedicated queue and never wait on the main thread.
+        remoteInput.configure(
+            isRemote: phase == .remote,
+            peer: peer,
+            pointerScale: configuration.pointerScale,
+            coalesceMilliseconds: configuration.motionCoalesceMilliseconds
+        )
     }
 
     private func refreshRoute() {

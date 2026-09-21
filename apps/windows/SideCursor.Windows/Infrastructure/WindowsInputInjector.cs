@@ -35,6 +35,18 @@ public sealed class WindowsInputInjector
     private int _returnEdgeInsetPixels;
     private bool _returnRequested;
     private DateTime _lastTargetCheckUtc = DateTime.MinValue;
+    /// A short window after entry during which leftward motion cannot trigger a
+    /// return. Without it, the tail of the entry motion (or a tiny counter-move)
+    /// bounced straight back to the Mac, which looked like flicker.
+    private static readonly TimeSpan ReturnGuardAfterEntry = TimeSpan.FromMilliseconds(180);
+    private DateTime _returnGuardUntilUtc = DateTime.MinValue;
+    private bool _useAbsolutePointer = true;
+    private int _virtualLeft;
+    private int _virtualTop;
+    private int _virtualWidth = 1;
+    private int _virtualHeight = 1;
+    private int _cursorX;
+    private int _cursorY;
 
     public DisplayDescriptor EnterRemote(SideCursorConfig configuration, string sourceDisplayId, int sourceWidth, int sourceHeight, double normalizedY)
     {
@@ -53,16 +65,19 @@ public sealed class WindowsInputInjector
             // compatibility but must not multiply on top, which double-scaled
             // pointer motion when both controls were raised.
             _motionMapper.Configure(sourceWidth, sourceHeight, target.Bounds, calibration: 1.0);
-            // Keep a few pixels between the entry point and the return
+            // Keep a comfortable gap between the entry point and the return
             // boundary; otherwise the pointer starts essentially on the return
             // edge and a tiny leftward nudge sends control straight back.
-            var entryInset = Math.Max(2, configuration.ReturnEdgeInsetPixels + 6);
+            var entryInset = Math.Max(8, configuration.ReturnEdgeInsetPixels + 20);
             var entry = target.Bounds.EntryPoint(normalizedY, insetPixels: entryInset);
             SetCursorPosOrThrow(entry.X, entry.Y, "Unable to position the Windows pointer at the target display edge");
 
+            _useAbsolutePointer = configuration.AbsolutePointer && CacheVirtualScreen(target);
+            TrackCursor(entry);
             _targetDisplay = target;
             _returnEdgeInsetPixels = configuration.ReturnEdgeInsetPixels;
             _returnRequested = false;
+            _returnGuardUntilUtc = DateTime.UtcNow + ReturnGuardAfterEntry;
             return target;
         }
     }
@@ -74,18 +89,40 @@ public sealed class WindowsInputInjector
             var target = RequireTarget();
             EnsureTargetStillPresent(target);
             var relative = _motionMapper.Translate(sourceDx, sourceDy);
-            var current = ReadCursorPosition();
-            var returnPlan = ReturnEdgePlanner.Plan(current, relative, target.Bounds, _returnEdgeInsetPixels);
-            if (returnPlan.RequestReturn)
+            // In absolute mode the injected position is tracked locally, so the
+            // return-edge plan is computed from an exact position instead of a
+            // possibly-accelerated GetCursorPos reading.
+            var current = _useAbsolutePointer ? new PixelPoint(_cursorX, _cursorY) : ReadCursorPosition();
+            // Ignore a return during the brief post-entry guard so the entry
+            // motion cannot immediately bounce control back to the Mac.
+            if (DateTime.UtcNow >= _returnGuardUntilUtc)
             {
-                var boundary = returnPlan.ClampCursorTo.GetValueOrDefault();
-                SetCursorPosOrThrow(boundary.X, boundary.Y, "Unable to keep the Windows pointer inside the selected return edge");
-                return RequestReturn(target, boundary);
+                var returnPlan = ReturnEdgePlanner.Plan(current, relative, target.Bounds, _returnEdgeInsetPixels);
+                if (returnPlan.RequestReturn)
+                {
+                    var boundary = returnPlan.ClampCursorTo.GetValueOrDefault();
+                    SetCursorPosOrThrow(boundary.X, boundary.Y, "Unable to keep the Windows pointer inside the selected return edge");
+                    TrackCursor(boundary);
+                    return RequestReturn(target, boundary);
+                }
             }
 
             if (relative.X != 0 || relative.Y != 0)
             {
-                SendMouse(relative.X, relative.Y, 0, NativeMethods.MouseeventfMove);
+                if (_useAbsolutePointer)
+                {
+                    var nextX = Math.Clamp(_cursorX + relative.X, target.Bounds.Left, target.Bounds.Right - 1);
+                    var nextY = Math.Clamp(_cursorY + relative.Y, target.Bounds.Top, target.Bounds.Bottom - 1);
+                    if (nextX != _cursorX || nextY != _cursorY)
+                    {
+                        SendAbsoluteMove(nextX, nextY);
+                        TrackCursor(new PixelPoint(nextX, nextY));
+                    }
+                }
+                else
+                {
+                    SendMouse(relative.X, relative.Y, 0, NativeMethods.MouseeventfMove);
+                }
             }
 
             return PointerInjectionResult.Continue;
@@ -321,6 +358,53 @@ public sealed class WindowsInputInjector
     private static bool IsExtendedKey(ushort virtualKey)
     {
         return virtualKey is 0x21 or 0x22 or 0x23 or 0x24 or 0x25 or 0x26 or 0x27 or 0x28 or 0x2D or 0x2E or 0x5B or 0x5C or 0xA3 or 0xA5;
+    }
+
+    /// <summary>
+    /// Reads the virtual-desktop metrics used to normalize absolute pointer
+    /// coordinates. Falls back to the target display's bounds if the metrics
+    /// are unavailable, and reports false (relative mode) if neither works.
+    /// </summary>
+    private bool CacheVirtualScreen(DisplayDescriptor target)
+    {
+        _virtualLeft = NativeMethods.GetSystemMetrics(NativeMethods.SmXvirtualscreen);
+        _virtualTop = NativeMethods.GetSystemMetrics(NativeMethods.SmYvirtualscreen);
+        _virtualWidth = NativeMethods.GetSystemMetrics(NativeMethods.SmCxvirtualscreen);
+        _virtualHeight = NativeMethods.GetSystemMetrics(NativeMethods.SmCyvirtualscreen);
+        if (_virtualWidth > 0 && _virtualHeight > 0)
+        {
+            return true;
+        }
+
+        _virtualLeft = target.Bounds.Left;
+        _virtualTop = target.Bounds.Top;
+        _virtualWidth = target.Bounds.Width;
+        _virtualHeight = target.Bounds.Height;
+        return _virtualWidth > 0 && _virtualHeight > 0;
+    }
+
+    private void TrackCursor(PixelPoint point)
+    {
+        _cursorX = point.X;
+        _cursorY = point.Y;
+    }
+
+    /// <summary>
+    /// Moves the cursor with MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK.
+    /// Unlike relative motion, absolute motion is not passed through Windows
+    /// pointer acceleration, so remote movement is 1:1 and predictable.
+    /// </summary>
+    private void SendAbsoluteMove(int x, int y)
+    {
+        var width = Math.Max(1, _virtualWidth - 1);
+        var height = Math.Max(1, _virtualHeight - 1);
+        var normalizedX = (int)Math.Round((x - _virtualLeft) * 65535.0 / width, MidpointRounding.AwayFromZero);
+        var normalizedY = (int)Math.Round((y - _virtualTop) * 65535.0 / height, MidpointRounding.AwayFromZero);
+        SendMouse(
+            Math.Clamp(normalizedX, 0, 65535),
+            Math.Clamp(normalizedY, 0, 65535),
+            0,
+            NativeMethods.MouseeventfMove | NativeMethods.MouseeventfAbsolute | NativeMethods.MouseeventfVirtualDesk);
     }
 
     private static void SendMouse(int dx, int dy, int mouseData, uint flags)

@@ -8,6 +8,8 @@ internal static class NativeMethods
     internal const uint InputMouse = 0;
     internal const uint InputKeyboard = 1;
     internal const uint MouseeventfMove = 0x0001;
+    internal const uint MouseeventfAbsolute = 0x8000;
+    internal const uint MouseeventfVirtualDesk = 0x4000;
     internal const uint MouseeventfLeftDown = 0x0002;
     internal const uint MouseeventfLeftUp = 0x0004;
     internal const uint MouseeventfRightDown = 0x0008;
@@ -21,10 +23,17 @@ internal static class NativeMethods
     internal const int WheelDelta = 120;
     internal const int MonitorDefaultToNull = 0;
     internal const int MdtEffectiveDpi = 0;
+    internal const int SmXvirtualscreen = 76;
+    internal const int SmYvirtualscreen = 77;
+    internal const int SmCxvirtualscreen = 78;
+    internal const int SmCyvirtualscreen = 79;
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetCursorPos(out Point point);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int index);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

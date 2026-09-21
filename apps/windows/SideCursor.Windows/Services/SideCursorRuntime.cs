@@ -445,6 +445,7 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             PeerPort = source.PeerPort,
             TargetDisplayId = source.TargetDisplayId,
             PointerCalibration = source.PointerCalibration,
+            AbsolutePointer = source.AbsolutePointer,
             ReturnEdgeInsetPixels = source.ReturnEdgeInsetPixels,
             ClipboardEnabled = source.ClipboardEnabled,
             ClipboardMaximumBytes = source.ClipboardMaximumBytes,
