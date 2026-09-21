@@ -1,6 +1,7 @@
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import IOKit.hidsystem
 
 public enum InputGateMode: Equatable {
     case local
@@ -69,6 +70,7 @@ public enum InputTapAction {
     case command(String)
     case panicHotkey
     case tapFailure(String)
+    case handoffProbe(x: Double, y: Double, deltaX: Int64, previousX: Double?, minX: Double, maxX: Double)
 }
 
 public enum InputTapError: Error, LocalizedError {
@@ -96,10 +98,23 @@ public enum AccessibilityPermission {
 
     public static var isGranted: Bool { AXIsProcessTrusted() }
 
+    /// Input Monitoring is separate from Accessibility. macOS needs it before
+    /// the event tap can observe and suppress local keyboard input, so remote
+    /// mode must not leave the Mac keyboard live.
+    public static var inputMonitoringGranted: Bool {
+        IOHIDCheckAccess(kIOHIDRequestTypeListenEvent as IOHIDRequestType) == kIOHIDAccessTypeGranted
+    }
+
     public static func requestPrompt() {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [key: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        requestInputMonitoring()
+    }
+
+    @discardableResult
+    public static func requestInputMonitoring() -> Bool {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent as IOHIDRequestType)
     }
 }
 
@@ -109,6 +124,17 @@ public final class InputEventTap {
     private let actionQueue: DispatchQueue
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    /// True when macOS installed the tap as a filter (events can be
+    /// suppressed).  A tap created before permission was granted is silently
+    /// made listen-only, which lets local input leak during remote mode.
+    public private(set) var isFiltering = false
+    /// Latest motion sample.  The tap callback runs on the main run loop, so
+    /// this is only touched from that single path.
+    private var lastMotionLocation: CGPoint?
+    private var lastProbeAt = Date.distantPast
+    /// Key codes whose key-down was consumed as a remote command; their key-up
+    /// is swallowed instead of being forwarded as an unmatched key-up.
+    private var commandKeyCodes: Set<Int64> = []
 
     public init(
         gate: InputGate,
@@ -126,22 +152,36 @@ public final class InputEventTap {
 
     public func start() throws {
         guard AccessibilityPermission.isGranted else { throw InputTapError.accessibilityPermissionMissing }
-        guard tap == nil else { return }
-        let eventMask = Self.eventMask(for: [
-            .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
-            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-            .otherMouseDown, .otherMouseUp, .scrollWheel,
-            .keyDown, .keyUp, .flagsChanged,
-        ])
+        if tap != nil {
+            if isFiltering { return }
+            // The system downgraded an earlier tap to listen-only (it was
+            // created before permission existed).  Recreate it now that the
+            // process is trusted so events can actually be suppressed.
+            stop()
+        }
+        let eventMask = CGEventMask.max
         let refcon = Unmanaged.passUnretained(self).toOpaque()
-        guard let eventTap = CGEvent.tapCreate(
+        // Input Leap's proven approach: tap at the HID level and return NULL
+        // while a remote session owns input.  That suppresses the raw events
+        // macOS needs for Dock-driven gestures (Mission Control, Spaces,
+        // Launchpad, Show Desktop), so no persistent gesture settings have to
+        // be rewritten.  Fall back to the session tap only if HID is denied.
+        let eventTap = CGEvent.tapCreate(
+            tap: .cghidEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: eventMask,
+            callback: Self.callback,
+            userInfo: refcon
+        ) ?? CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: Self.callback,
             userInfo: refcon
-        ) else {
+        )
+        guard let eventTap else {
             throw InputTapError.creationFailed
         }
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
@@ -149,6 +189,14 @@ public final class InputEventTap {
         CGEvent.tapEnable(tap: eventTap, enable: true)
         tap = eventTap
         runLoopSource = source
+        refreshFilteringState()
+    }
+
+    /// Re-reads whether our installed tap can suppress events.  Called after
+    /// starting and again after the permission poll, because macOS only
+    /// upgrades the tap when it is recreated while fully trusted.
+    public func refreshFilteringState() {
+        isFiltering = Self.installedTapIsFiltering()
     }
 
     public func stop() {
@@ -159,6 +207,7 @@ public final class InputEventTap {
         }
         self.tap = nil
         runLoopSource = nil
+        isFiltering = false
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -195,22 +244,43 @@ public final class InputEventTap {
         if type == .keyDown || type == .keyUp || type == .flagsChanged {
             return handleKey(type, event: event, snapshot: snapshot)
         }
-        return Unmanaged.passUnretained(event)
+        // Everything else includes the gesture events that drive Mission
+        // Control, Spaces, Launchpad, and Show Desktop.  They are dropped
+        // while a remote session owns input so those actions never fire.
+        switch snapshot.mode {
+        case .remote, .entering, .returning, .recovering:
+            return nil
+        case .local, .ready:
+            return Unmanaged.passUnretained(event)
+        }
     }
 
     private func handleMotion(_ event: CGEvent, snapshot: InputGateSnapshot) -> Unmanaged<CGEvent>? {
         let dx = Int(event.getIntegerValueField(.mouseEventDeltaX))
         let dy = Int(event.getIntegerValueField(.mouseEventDeltaY))
+        let location = event.location
+        let previousLocation = lastMotionLocation
+        lastMotionLocation = location
         switch snapshot.mode {
         case .remote:
             if dx != 0 || dy != 0 { emit(.input(.pointer(dx: dx, dy: dy))) }
             return nil
         case .ready:
-            guard Date() >= snapshot.handoffBlockedUntil,
-                  let route = snapshot.route,
-                  route.crossesFromInside(event.location, deltaX: Int64(dx))
-            else { return Unmanaged.passUnretained(event) }
-            emit(.edgeCrossed(y: route.normalizedY(for: event.location)))
+            guard let route = snapshot.route else { return Unmanaged.passUnretained(event) }
+            if Date() >= snapshot.handoffBlockedUntil,
+               route.crossesFromInside(location, deltaX: Int64(dx), previous: previousLocation) {
+                emit(.edgeCrossed(y: route.normalizedY(for: location)))
+            } else if route.isNearRightEdge(location), Date().timeIntervalSince(lastProbeAt) >= 1 {
+                lastProbeAt = Date()
+                emit(.handoffProbe(
+                    x: Double(location.x),
+                    y: Double(location.y),
+                    deltaX: Int64(dx),
+                    previousX: previousLocation.map { Double($0.x) },
+                    minX: Double(route.display.bounds.x),
+                    maxX: Double(route.display.bounds.maxX)
+                ))
+            }
             return Unmanaged.passUnretained(event)
         case .entering, .returning, .recovering:
             return nil
@@ -254,11 +324,17 @@ public final class InputEventTap {
         switch snapshot.mode {
         case .remote:
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            if type == .keyUp, commandKeyCodes.remove(keyCode) != nil {
+                // The matching key-down became a remote command, so its key-up
+                // must not be forwarded as an unmatched key-up to Windows.
+                return nil
+            }
             if type == .keyDown, let command = MacVirtualKeyMapper.remoteCommand(
                 keyCode: keyCode,
                 flags: event.flags,
                 hotkeys: snapshot.hotkeys
             ) {
+                commandKeyCodes.insert(keyCode)
                 emit(.command(command))
                 return nil
             }
@@ -303,6 +379,20 @@ public final class InputEventTap {
 
     private static func eventMask(for events: [CGEventType]) -> CGEventMask {
         events.reduce(0) { result, event in result | (CGEventMask(1) << event.rawValue) }
+    }
+
+    /// Asks the window server whether SideCursor's own session tap is a
+    /// filtering tap.  A listen-only tap cannot delete events, so remote mode
+    /// would leak local input even though everything else looks healthy.
+    private static func installedTapIsFiltering() -> Bool {
+        var taps = [CGEventTapInformation](repeating: CGEventTapInformation(), count: 256)
+        var count: UInt32 = 0
+        guard CGGetEventTapList(UInt32(taps.count), &taps, &count) == .success else { return false }
+        let processID = Int32(ProcessInfo.processInfo.processIdentifier)
+        for tap in taps.prefix(Int(count)) where tap.tappingProcess == processID {
+            if tap.options == .defaultTap, tap.enabled { return true }
+        }
+        return false
     }
 }
 

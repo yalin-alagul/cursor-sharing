@@ -71,7 +71,7 @@ public struct SideCursorConfiguration: Codable, Equatable {
         bluetoothChannel: Int = 11,
         sourceDisplayID: String? = nil,
         sourceEdge: HorizontalEdge = .right,
-        returnInset: Double = 24,
+        returnInset: Double = 8,
         pointerScale: Double = 1.0,
         clipboardEnabled: Bool = true,
         clipboardMaximumBytes: Int = SideCursorConfiguration.maximumClipboardBytes,
@@ -108,9 +108,20 @@ public final class UserDefaultsConfigurationStore: ConfigurationStoring {
 
     public func load() -> SideCursorConfiguration {
         guard let data = defaults.data(forKey: key),
-              let configuration = try? JSONDecoder().decode(SideCursorConfiguration.self, from: data)
+              var configuration = try? JSONDecoder().decode(SideCursorConfiguration.self, from: data)
         else {
             return SideCursorConfiguration()
+        }
+        // One-time migration: the original 24 px return inset forced a long
+        // push back toward the edge, which made back-and-forth crossings feel
+        // slow.  8 px still keeps the pointer clear of the edge.
+        let migrationKey = "native-v2-return-inset-migrated"
+        if !defaults.bool(forKey: migrationKey) {
+            defaults.set(true, forKey: migrationKey)
+            if configuration.returnInset == 24 {
+                configuration.returnInset = 8
+                save(configuration)
+            }
         }
         return configuration
     }
@@ -188,24 +199,49 @@ public struct EdgeRoute: Equatable {
         self.edge = edge
     }
 
-    public func crossesFromInside(_ point: CGPoint, deltaX: Int64, threshold: Double = 2) -> Bool {
-        guard deltaX > 0,
-              point.y >= display.bounds.y,
+    /// A pointer can be reported several pixels beyond a display's Quartz
+    /// bounds on the event that crosses into an adjacent (or empty)
+    /// virtual-desktop region, and mouse-moved events effectively stop once the
+    /// pointer is parked at the edge. Reconstructing the prior position from
+    /// `deltaX` is unreliable there: the crossing sample can carry a zero delta
+    /// or overshoot farther than the reported delta. Prefer the tracked
+    /// previous location when it is available and allow a bounded overshoot so
+    /// that the first edge sample always starts the handoff, while a pointer
+    /// already far to the right on another display does not.
+    public func crossesFromInside(
+        _ point: CGPoint,
+        deltaX: Int64,
+        previous: CGPoint? = nil,
+        threshold: Double = 2,
+        overshoot: Double = 24
+    ) -> Bool {
+        guard point.y >= display.bounds.y,
               point.y < display.bounds.maxY
         else { return false }
 
-        // A pointer can be reported one or more pixels beyond a display's
-        // Quartz bounds on the event that crosses into an adjacent (or empty)
-        // virtual-desktop region. The old `contains(point)` guard dropped that
-        // exact event, so a valid right-edge handoff never began. Use the
-        // event delta to prove that the prior pointer position was inside the
-        // configured source display instead.
-        let priorX = point.x - CGFloat(deltaX)
-        guard priorX >= display.bounds.x, priorX < display.bounds.maxX else { return false }
-        switch edge {
-        case .right:
-            return point.x >= display.bounds.maxX - max(0, threshold)
+        let maxX = display.bounds.maxX
+        guard point.x >= maxX - max(0, threshold) else { return false }
+
+        let priorX: CGFloat
+        let movingRight: Bool
+        if let previous {
+            priorX = previous.x
+            movingRight = point.x > previous.x
+        } else {
+            priorX = point.x - CGFloat(deltaX)
+            movingRight = deltaX > 0
         }
+        guard movingRight else { return false }
+
+        return priorX < maxX + max(0, overshoot)
+    }
+
+    /// True while the pointer sits inside the display's vertical span and
+    /// within `margin` pixels of the configured right edge. Used only for
+    /// throttled handoff diagnostics.
+    public func isNearRightEdge(_ point: CGPoint, margin: Double = 8) -> Bool {
+        guard point.y >= display.bounds.y, point.y < display.bounds.maxY else { return false }
+        return point.x >= display.bounds.maxX - margin
     }
 
     public func normalizedY(for point: CGPoint) -> Double {

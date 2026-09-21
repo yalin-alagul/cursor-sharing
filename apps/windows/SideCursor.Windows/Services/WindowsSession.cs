@@ -201,17 +201,13 @@ public sealed class WindowsSession : IDisposable
     private async Task HandleInputAsync(JsonElement message, CancellationToken cancellationToken)
     {
         var sessionState = _state.Snapshot.State;
-        if (sessionState == SessionState.Returning)
-        {
-            // A few encrypted input frames can already be in flight when the
-            // selected Windows edge triggers a return. They are harmlessly
-            // discarded after ReleaseAll rather than being treated as a
-            // protocol fault that tears down an otherwise healthy session.
-            return;
-        }
         if (sessionState != SessionState.Remote)
         {
-            throw new ProtocolViolationException("Input is only accepted while Windows is in the Remote state.");
+            // Input frames can already be in flight when the selected Windows
+            // edge starts (or completes) a return to the Mac. They are
+            // harmlessly discarded rather than treated as a protocol fault that
+            // tears down an otherwise healthy session.
+            return;
         }
 
         if (!message.TryGetProperty("event", out var input) || input.ValueKind != JsonValueKind.Object)
@@ -248,17 +244,23 @@ public sealed class WindowsSession : IDisposable
 
     private void HandleCommand(JsonElement message)
     {
-        var sessionState = _state.Snapshot.State;
-        if (sessionState == SessionState.Returning)
+        if (_state.Snapshot.State != SessionState.Remote)
         {
+            // Same in-flight tolerance as pointer/keyboard input.
             return;
         }
-        if (sessionState != SessionState.Remote)
-        {
-            throw new ProtocolViolationException("Commands are only accepted while Windows is in the Remote state.");
-        }
 
-        _input.InjectCommand(RequiredString(message, "name"), _configuration.Commands);
+        var name = RequiredString(message, "name");
+        try
+        {
+            _input.InjectCommand(name, _configuration.Commands);
+        }
+        catch (InputInjectionException exception)
+        {
+            // A rejected shortcut must never take down an otherwise healthy
+            // session; report it and keep the transport alive.
+            _diagnostics.Add($"Remote command '{name}' was ignored: {exception.Message}");
+        }
     }
 
     private void HandleReturnAcknowledgement(JsonElement message)
