@@ -1,0 +1,30 @@
+name: Native SideCursor CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test macOS companion
+        run: swift test
+        working-directory: apps/macos
+      - name: Validate shared native protocol vector
+        run: swift ../../tools/validate_protocol_vector.swift
+        working-directory: apps/macos
+      - name: Build macOS companion
+        run: swift build -c release
+        working-directory: apps/macos
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Windows companion
+        run: dotnet test .\apps\windows\SideCursor.Windows.Tests\SideCursor.Windows.Tests.csproj --configuration Release
+      - name: Build Windows companion
+        run: dotnet build .\apps\windows\SideCursor.Windows\SideCursor.Windows.csproj --configuration Release --no-restore

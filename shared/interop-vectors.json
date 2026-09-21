@@ -1,0 +1,19 @@
+{
+  "acceptProof": "YycmOIM6w3x2yWi7dtLsijSDFqtK8l2V_w5LQ898yQE",
+  "clientNonce": "sLGys7S1tre4ubq7vL2-vw",
+  "clientPrivate": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+  "clientPublic": "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns",
+  "frame": {
+    "combined": "wMHCw8TFxsfIycrLsAezTPUoddYFkolTawY7pQNUyR_B7m4igLRHvM5RJ-wOv5mv9UGWGxTcWSfHgA",
+    "nonce": "wMHCw8TFxsfIycrL",
+    "plaintext": "{\"type\":\"ping\",\"sentAtMs\":123}",
+    "sequence": 1
+  },
+  "pairingSecret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "pairProof": "wTKDr9Ngq0AxYEgXHdMr_ePcaiwPWjfh6W9ahrME_0g",
+  "serverNonce": "oKGio6SlpqeoqaqrrK2urw",
+  "serverPrivate": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "serverPublic": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+  "sessionKey": "C4Mb4uCpZj27xWRkTSyaznnZQ1tHPPRsoPmfIRu9iPQ",
+  "sharedSecret": "qE3Hw8jwWLGy3EzR6bXcCnmH-ItqlWTN4zkfxCEVnnc"
+}
