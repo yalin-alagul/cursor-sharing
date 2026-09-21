@@ -3,7 +3,7 @@ import Foundation
 
 /// The compatibility profile only writes persistent macOS settings when the
 /// user presses Apply.  It is never invoked during edge handoff or remote mode.
-public enum PreferenceValue: Codable, Equatable {
+public enum PreferenceValue: Codable, Equatable, Sendable {
     case bool(Bool)
     case integer(Int)
     case double(Double)
@@ -41,7 +41,7 @@ public enum PreferenceValue: Codable, Equatable {
     }
 }
 
-public struct PreferenceAddress: Codable, Hashable, Equatable {
+public struct PreferenceAddress: Codable, Hashable, Equatable, Sendable {
     public let domain: String
     public let currentHost: Bool
     public let key: String
@@ -53,7 +53,7 @@ public struct PreferenceAddress: Codable, Hashable, Equatable {
     }
 }
 
-public struct GesturePreference: Codable, Equatable {
+public struct GesturePreference: Codable, Equatable, Sendable {
     public let address: PreferenceAddress
     public let disabledValue: PreferenceValue
 
@@ -63,7 +63,7 @@ public struct GesturePreference: Codable, Equatable {
     }
 }
 
-public struct GestureSnapshotEntry: Codable, Equatable {
+public struct GestureSnapshotEntry: Codable, Equatable, Sendable {
     public let address: PreferenceAddress
     public let originalValue: PreferenceValue?
 
@@ -73,7 +73,7 @@ public struct GestureSnapshotEntry: Codable, Equatable {
     }
 }
 
-public struct GestureSnapshot: Codable, Equatable {
+public struct GestureSnapshot: Codable, Equatable, Sendable {
     public let createdAt: Date
     public let entries: [GestureSnapshotEntry]
 

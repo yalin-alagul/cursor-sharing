@@ -72,7 +72,10 @@ public final class SessionController: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in self?.handleDisplayConfigurationChanged() }
+                guard let self else { return }
+                Task { @MainActor [self] in
+                    self.handleDisplayConfigurationChanged()
+                }
             }
         }
         clipboard.start { [weak self] text in
@@ -357,8 +360,9 @@ public final class SessionController: ObservableObject {
             peer.send(.enterRequest(EnterRequest(id: identifier, y: y, source: source)))
             entryTimeout?.invalidate()
             entryTimeout = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, self.phase == .entering, self.pendingEnterID == identifier else { return }
+                guard let self else { return }
+                Task { @MainActor [self] in
+                    guard self.phase == .entering, self.pendingEnterID == identifier else { return }
                     self.recover(reason: "Windows did not acknowledge entry; Mac control stayed local.")
                 }
             }
@@ -566,8 +570,9 @@ public final class SessionController: ObservableObject {
     private func startPingTimer() {
         stopPingTimer()
         pingTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.peer != nil else { return }
+            guard let self else { return }
+            Task { @MainActor [self] in
+                guard self.peer != nil else { return }
                 let now = Int64(Date().timeIntervalSince1970 * 1_000)
                 self.peer?.send(.ping(sentAtMs: now))
             }
