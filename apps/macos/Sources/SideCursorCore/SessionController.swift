@@ -56,12 +56,29 @@ public final class SessionController: ObservableObject {
     private var activationObserver: NSObjectProtocol?
     private var permissionPollTimer: Timer?
     private var didAttemptFilteringUpgrade = false
-    /// Coalesced pointer delta awaiting its flush. A fast mouse produces many
-    /// motion samples per main-run-loop turn; summing them into one frame keeps
-    /// the send queue from backing up and turning into trailing pointer lag.
-    private var pendingMotionDX = 0
-    private var pendingMotionDY = 0
-    private var motionFlushScheduled = false
+
+    private static let diagnosticsLogURL: URL = {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("SideCursor/diagnostics.log")
+    }()
+
+    private func logDiagnostic(_ message: String) {
+        let url = Self.diagnosticsLogURL
+        let line = "\(String(format: "%.3f", Date().timeIntervalSince1970))  \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let directory = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: url.path) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            }
+        } else {
+            try? data.write(to: url)
+        }
+    }
 
     public init(
         configurationStore: ConfigurationStoring = UserDefaultsConfigurationStore(),
@@ -529,10 +546,12 @@ public final class SessionController: ObservableObject {
         case let .returnRequest(id, y):
             guard phase == .remote else { return }
             do {
+                let t0 = Date()
                 try machine.transition(.requestReturn)
                 phase = machine.phase
                 synchronizeGate()
                 try cursorController.release(returnY: y, inset: configuration.returnInset)
+                let t1 = Date()
                 // The return inset already parks the pointer a few pixels
                 // inside the source display, and the release warp moves left,
                 // so it cannot re-trigger a handoff. Do not add a re-entry
@@ -544,6 +563,13 @@ public final class SessionController: ObservableObject {
                 phase = machine.phase
                 pendingEnterID = nil
                 synchronizeGate()
+                let t2 = Date()
+                logDiagnostic(String(
+                    format: "return release=%.1fms ack+ready=%.1fms total=%.1fms",
+                    t1.timeIntervalSince(t0) * 1_000,
+                    t2.timeIntervalSince(t1) * 1_000,
+                    t2.timeIntervalSince(t0) * 1_000
+                ))
                 statusMessage = "Returned to Mac control."
             } catch {
                 recover(reason: error.localizedDescription)
@@ -582,7 +608,8 @@ public final class SessionController: ObservableObject {
             handoffDebug = String(format: "edge crossed at y=%.2f", y)
             requestEntry(y: y)
         case let .input(event):
-            forwardInput(event)
+            guard phase == .remote else { return }
+            peer?.send(.input(scale(event)))
         case let .command(name):
             guard phase == .remote else { return }
             peer?.send(.command(name: name))
@@ -614,37 +641,13 @@ public final class SessionController: ObservableObject {
         )
     }
 
-    /// Forwards a remote input event. Pointer motion is coalesced per
-    /// main-run-loop turn so a high-rate mouse never queues unbounded frames;
-    /// every other event (buttons, scroll, keys) flushes the pending motion
-    /// first so its ordering relative to the motion is preserved.
-    private func forwardInput(_ event: NativeInputEvent) {
-        guard phase == .remote else { return }
-        switch event {
-        case let .pointer(dx, dy):
-            let scale = configuration.pointerScale
-            pendingMotionDX += Int((Double(dx) * scale).rounded())
-            pendingMotionDY += Int((Double(dy) * scale).rounded())
-            if !motionFlushScheduled {
-                motionFlushScheduled = true
-                DispatchQueue.main.async { [weak self] in
-                    self?.flushMotion()
-                }
-            }
-        default:
-            flushMotion()
-            peer?.send(.input(event))
-        }
-    }
-
-    private func flushMotion() {
-        motionFlushScheduled = false
-        let dx = pendingMotionDX
-        let dy = pendingMotionDY
-        pendingMotionDX = 0
-        pendingMotionDY = 0
-        guard phase == .remote, peer != nil, dx != 0 || dy != 0 else { return }
-        peer?.send(.input(.pointer(dx: dx, dy: dy)))
+    private func scale(_ event: NativeInputEvent) -> NativeInputEvent {
+        guard case let .pointer(dx, dy) = event else { return event }
+        let scale = configuration.pointerScale
+        return .pointer(
+            dx: Int((Double(dx) * scale).rounded()),
+            dy: Int((Double(dy) * scale).rounded())
+        )
     }
 
     private func sendLocalClipboard(_ text: String) {
@@ -659,9 +662,6 @@ public final class SessionController: ObservableObject {
         entryTimeout?.invalidate()
         entryTimeout = nil
         pendingEnterID = nil
-        pendingMotionDX = 0
-        pendingMotionDY = 0
-        motionFlushScheduled = false
         if phase != .recovering && phase != .disconnected {
             try? machine.transition(.recover)
             phase = machine.phase
