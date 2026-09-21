@@ -1,87 +1,118 @@
-# SideCursor
+# SideCursor Native
 
-SideCursor is a low-latency, peer-to-peer cursor, keyboard, and clipboard sharing prototype for macOS and Windows.
+SideCursor is a native macOS-to-Windows input-sharing application. The Mac
+owns capture; Windows receives cursor, keyboard, two-finger scroll, and
+plain-text clipboard events only after an authenticated handoff.
 
-It is intentionally split into two layers:
+The Python files in this repository are preserved only as an unsupported
+historical prototype. Do not run them alongside either native companion.
 
-1. The **link layer** creates a direct IP path between the computers. This can be a Wi-Fi Direct group, a macOS Personal Hotspot/peer link, USB tethering, or another point-to-point interface. The application does not need both computers on the same ordinary LAN.
-2. The **SideCursor layer** listens or connects over that path, authenticates the peer with a shared token, encrypts frames with X25519 + ChaCha20-Poly1305, and transports input and clipboard events.
+## What is built
 
-macOS AWDL and Windows Wi-Fi Direct are controlled by different private/platform APIs. There is no stable public API that lets one portable Python program negotiate an arbitrary Mac-to-Windows Wi-Fi Direct group. The included scripts therefore prepare/check the OS link, while SideCursor handles the fast data plane once the link has an IP address.
+    apps/macos/       SwiftUI/AppKit menu-bar app and input host
+    apps/windows/     .NET 8 WPF tray app and Windows input receiver
+    shared/           native v2 protocol and interoperability fixture
+    tools/            local packaging helpers
 
-## Requirements
+The native protocol uses an explicit pairing secret, X25519, HKDF-SHA256,
+ChaCha20-Poly1305, strict sequence numbers, and replay rejection. Pairing
+material is stored in macOS Keychain and Windows DPAPI; it is never passed on
+a command line or written to diagnostics.
 
-- Python 3.10 or newer on both computers
-- `cryptography`
-- macOS: grant the terminal/Python process **Accessibility** permission in System Settings → Privacy & Security → Accessibility
-- Windows: run the terminal as the same user that owns the desktop session; elevated access may be needed for global hooks on protected applications
+## Installed builds on these machines
 
-Install the dependencies:
+- macOS: /Applications/SideCursor.app
+- Windows: C:\Users\Yalin Alagul\SideCursorNative\SideCursor.Windows.exe
 
-```bash
-python3 -m pip install -r requirements.txt
-```
+The Windows folder is separate from C:\Users\Yalin Alagul\SideCursor, so the
+older Python setup has not been overwritten.
 
-## Quick start
+## First run: Tailscale TCP
 
-On the computer that should capture input, run the server. It advertises itself on the local/direct Wi-Fi link:
+1. Launch SideCursor on both devices. On Mac, click the menu-bar icon and open
+   **SideCursor Settings**. On Windows, run:
 
-```bash
-python3 mac_sidecursor.py server --token 'replace-with-a-long-random-token'
-```
+       Start-Process 'C:\Users\Yalin Alagul\SideCursorNative\SideCursor.Windows.exe'
 
-On Windows, after the direct link is established, run the client without an IP:
+2. On Mac, open **Connection → Pairing**, choose **Generate new code**, and
+   copy the displayed code. On Windows, open **Pairing & transport**, paste
+   it into **Pairing code**, select **Tailscale TCP**, enter the Mac's current
+   Tailscale address **100.97.142.96** and port **24800**, then choose
+   **Save and reconnect**. Do not use a token from an old terminal command.
 
-```powershell
-py -3.12 windows_sidecursor.py client --token "replace-with-a-long-random-token"
-```
+3. Back on Mac, click **Save & reconnect**. The Mac status should say it is
+   listening and then **Paired Windows companion is ready**. Windows should
+   show **Ready** and an RTT.
 
-The server binds to `0.0.0.0:24800` and advertises on UDP `24801`. Use `--peer <address>` only as a fallback. Discovery only works after the operating system has created a direct/local link; it does not create the Wi-Fi Direct group itself. The supplied SSH endpoint is useful for copying or launching the Windows package, but SSH is not used as the cursor transport.
+4. On Mac, grant SideCursor **Accessibility** in System Settings → Privacy &
+   Security → Accessibility, if it is not already granted. In **Display
+   Route**, choose only the upper external 4K display as the source.
 
-### Bluetooth RFCOMM
+5. On Windows, choose the Dell display in **Displays & input** and save it.
+   The natural pointer scale is **1.00**; adjust it only after testing.
 
-After pairing the computers in their Bluetooth settings, Bluetooth can be used
-as a separate link while both machines remain connected to IllinoisNet. Start
-Windows first so it can own the RFCOMM listener, then start macOS with the
-Windows adapter address:
+6. Move through the selected Mac display's right edge to enter Windows. Move
+   through the selected Windows display's left edge to return.
 
-```powershell
-py -3.12 windows_sidecursor.py client --transport bluetooth --bluetooth-peer 54:14:F3:78:6E:D6 --token "replace-with-a-long-random-token"
-```
+## Gesture compatibility
 
-```bash
-python3 mac_sidecursor.py server --transport bluetooth --bluetooth-peer 54:14:F3:78:6E:D6 --token 'replace-with-a-long-random-token'
-```
+SideCursor does not dynamically change macOS gesture settings during a remote
+session. If macOS Space/side-swipe/desktop effects still interrupt remote use,
+open **Input & Gestures → Gesture Compatibility Profile → Apply**.
 
-The default RFCOMM channel is 11; pass `--bluetooth-channel` on both sides if
-another paired service already occupies it. This mode does not use IllinoisNet,
-Tailscale, or an IP address for SideCursor traffic.
+The profile saves the exact prior value of every touched setting, including
+whether a key was absent. It disables conflicting Mission Control, Desktop,
+Launchpad, pinch, rotate, and three/four-finger actions for both internal and
+external Apple trackpads. Sign out or restart after applying or restoring it.
+Use **Verify** before testing and **Restore** to return the saved settings.
+Normal pointer movement, clicks, two-finger scrolling, and local keyboard
+input remain local outside remote mode.
 
-SideCursor adds a small cursor icon to the macOS menu bar or Windows notification area. On the Mac server, move the cursor into the right edge of the screen to enter Windows-control mode. **Ctrl+Alt+F8** is also available as a manual toggle. In remote mode, mouse and keyboard events on the Mac are forwarded as relative input and suppressed locally. Clipboard synchronization remains bidirectional while connected.
+## Bluetooth fallback
 
-## Direct Wi-Fi link
+Bluetooth RFCOMM is manual and never silently replaces Tailscale:
 
-The application needs an IP address on the direct interface. It does not assume the normal home/office LAN:
+1. Pair the Mac and Windows computer in operating-system Bluetooth settings.
+2. In Windows, select **Bluetooth RFCOMM** and choose **Save and reconnect**.
+   Its status must say **Bluetooth RFCOMM listener ready**.
+3. In Mac settings, select **Bluetooth RFCOMM** and enter the Windows
+   Bluetooth address.
+4. Click **Save & reconnect** on Mac.
 
-- On Windows, inspect Wi-Fi Direct support with `powershell -ExecutionPolicy Bypass -File tools/windows_link_check.ps1`.
-- On macOS, use a Personal Hotspot or a peer-to-peer Wi-Fi interface and inspect addresses with `ifconfig`.
-- Verify reachability from Windows with `Test-NetConnection <mac-ip> -Port 24800`.
-- If the Wi-Fi Direct group assigns a different peer address, pass that address to `--peer`.
+The Windows app advertises a fixed SideCursor service UUID. macOS resolves the
+currently assigned RFCOMM channel through Bluetooth SDP, so no old hard-coded
+channel such as 11 is used.
 
-The transport uses TCP for reliable control/clipboard messages and encrypted compact frames. Mouse movement is coalesced so stale positions do not build up behind the network. On Windows, SideCursor enables per-monitor DPI awareness for its input threads before reading desktop metrics, and each Mac-to-Windows handoff scales relative motion to the two active desktop sizes. Different resolutions and Retina scaling therefore do not need a shared configuration. The pointer enters Windows two physical pixels from its left edge (rather than jumping 160--320 pixels inward), and the Mac checks the edge of the display that currently contains the cursor.
+## Controls and recovery
 
-## Layout
+- **Control + Option + F8** always stays local and immediately returns control
+  to the Mac. It is never forwarded.
+- **Control + Option + Left/Right** maps to Windows virtual desktops;
+  **Control + Option + Up** maps to Task View; **Control + Option + Down** maps
+  to Show Desktop. Each can be disabled in settings.
+- Mac Command maps to Windows, Control to Control, Option to Alt, and Shift
+  to Shift.
+- A failed entry acknowledgement, lost peer, display change, permission loss,
+  app quit, or panic action restores Mac input and releases Windows keys and
+  mouse buttons.
+- SideCursor does not capture displays or use a black-screen shield.
 
-```text
-sidecursor/
-  app.py          command-line runtime and connection orchestration
-  protocol.py     authenticated encrypted framed transport
-  platform.py     platform adapter selection
-  mac.py          Quartz/AppKit global events and clipboard
-  windows.py      Win32 low-level hooks, SendInput, and clipboard
-mac_sidecursor.py
-windows_sidecursor.py
-tools/windows_link_check.ps1
-```
+## Local development and validation
 
-This is an MVP foundation: it provides the core path and platform adapters, but it does not yet include a polished tray UI, multi-monitor edge routing, or automatic Wi-Fi Direct group negotiation.
+    swift test --package-path apps/macos
+    swift tools/validate_protocol_vector.swift
+    ./tools/build_macos_app.sh
+
+On Windows:
+
+    dotnet test .\apps\windows\SideCursor.Windows.sln -c Release
+    .\tools\build_windows.ps1 -SelfContained
+
+The current direct route is Tailscale peer-to-peer when available; it does not
+require both machines on the same ordinary LAN. Raw Wi-Fi Direct group
+negotiation is intentionally out of scope because there is no stable portable
+macOS/Windows API for it.
+
+See [the protocol contract](shared/protocol.md) and
+[the session recovery contract](shared/session-state.md) for wire and safety
+details.

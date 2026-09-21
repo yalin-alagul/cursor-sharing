@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>SideCursor</string>
+  <key>CFBundleExecutable</key>
+  <string>SideCursorMac</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.yalinalagul.sidecursor</string>
+  <key>CFBundleName</key>
+  <string>SideCursor</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>SideCursor uses Bluetooth only to discover and open the paired Windows RFCOMM fallback service.</string>
+</dict>
+</plist>
