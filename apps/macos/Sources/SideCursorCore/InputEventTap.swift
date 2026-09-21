@@ -298,7 +298,7 @@ public final class InputEventTap {
     }
 }
 
-public struct WindowsKeyMapping: Equatable {
+public struct WindowsKeyMapping: Equatable, Sendable {
     public let vk: Int
     public let extended: Bool
     public let modifierMask: CGEventFlags?

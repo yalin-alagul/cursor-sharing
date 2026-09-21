@@ -3,7 +3,7 @@ import Foundation
 /// The native v2 state machine.  It deliberately has no implicit transition
 /// from a pointer event directly into Remote: Windows must acknowledge entry
 /// and macOS must capture its cursor first.
-public enum SessionPhase: String, Codable, CaseIterable, Equatable {
+public enum SessionPhase: String, Codable, CaseIterable, Equatable, Sendable {
     case disconnected = "Disconnected"
     case connecting = "Connecting"
     case ready = "Ready"
@@ -17,7 +17,7 @@ public enum SessionPhase: String, Codable, CaseIterable, Equatable {
     }
 }
 
-public enum SessionEvent: Equatable {
+public enum SessionEvent: Equatable, Sendable {
     case beginConnecting
     case peerReady
     case requestEntry
@@ -30,7 +30,7 @@ public enum SessionEvent: Equatable {
     case disconnect
 }
 
-public enum SessionStateError: Error, Equatable, LocalizedError {
+public enum SessionStateError: Error, Equatable, LocalizedError, Sendable {
     case invalidTransition(phase: SessionPhase, event: SessionEvent)
 
     public var errorDescription: String? {

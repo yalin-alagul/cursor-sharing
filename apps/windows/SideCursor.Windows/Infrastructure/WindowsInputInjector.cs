@@ -195,7 +195,7 @@ public sealed class WindowsInputInjector
         lock (_gate)
         {
             var failures = new List<Exception>();
-            foreach (var key in _pressedKeys.ToArray().Reverse())
+            foreach (var key in Enumerable.Reverse(_pressedKeys.ToArray()))
             {
                 try
                 {
