@@ -50,10 +50,20 @@ ciphertext-and-16-byte-tag
 The encrypted plaintext is compact UTF-8 JSON.  A receiving peer requires an
 exactly increasing sequence (`last + 1`), which rejects replay, duplicates, and
 out-of-order data.  The sequence header is included as AEAD additional
-authenticated data.
+authenticated data.  The receiver must authenticate the frame before it commits
+the new sequence, so a forged frame cannot consume the next sequence number.
+
+The default Tailscale TCP port is `24800`.  The Mac listens on it; Windows
+connects to the Mac's Tailscale address and this port.
 
 `interop-vectors.json` contains deterministic handshake and encrypted-frame
-fixtures.  Both native test suites must validate them before a release.
+fixtures.  Both native test suites must validate them before a release.  In the
+fixture, `frame.combined` is the AEAD body only (`nonce || ciphertext || tag`).
+To reconstruct the wire frame, read `frame.sequence` as uint64 big-endian and
+prepend it to `frame.combined`, then prefix the resulting length as uint32
+big-endian.  The 12-byte nonce is not required to follow the sender's
+`random-4-byte-prefix || sequence` construction; the sequence is always taken
+from the wire header and never from the nonce.
 
 ## Messages
 

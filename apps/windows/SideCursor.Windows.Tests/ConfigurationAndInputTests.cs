@@ -1,3 +1,4 @@
+using System.IO;
 using System.Security.Cryptography;
 using SideCursor.Windows.Core;
 using SideCursor.Windows.Infrastructure;
@@ -23,6 +24,45 @@ public sealed class ConfigurationAndInputTests
         Assert.Equal(expected, parsed);
         CryptographicOperations.ZeroMemory(expected);
         CryptographicOperations.ZeroMemory(parsed);
+    }
+
+    [Fact]
+    public void PairingParserRejectsAPassphraseInsteadOfHashingIt()
+    {
+        // macOS requires the exact 32-byte base64url secret, so hashing an
+        // arbitrary passphrase here used to "succeed" without ever pairing.
+        Assert.Throws<ArgumentException>(() => PairingSecretParser.Parse("correct horse battery staple"));
+    }
+
+    [Theory]
+    [InlineData("f1", "F1")]
+    [InlineData("F24", "F24")]
+    public void FunctionKeysAreCaseInsensitive(string source, string expected)
+    {
+        Assert.True(HotkeyChord.TryParse(source, out var hotkey));
+        Assert.Equal(expected, hotkey.ToString());
+    }
+
+    [Fact]
+    public void CorruptSettingsFileFallsBackToDefaultsAndKeepsACopy()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "sidecursor-tests-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new AppDataPaths(root);
+            Directory.CreateDirectory(root);
+            File.WriteAllText(paths.ConfigurationPath, "{ this is not valid json");
+            var store = new ConfigurationStore(paths);
+
+            var configuration = store.Load();
+
+            Assert.Equal(24800, configuration.PeerPort);
+            Assert.True(File.Exists(paths.ConfigurationPath + ".corrupt"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

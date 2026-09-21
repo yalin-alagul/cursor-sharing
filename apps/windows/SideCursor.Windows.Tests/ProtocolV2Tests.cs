@@ -93,6 +93,21 @@ public sealed class ProtocolV2Tests
     }
 
     [Fact]
+    public void SequenceWindowOnlyAdvancesWhenCommitted()
+    {
+        var sequence = new StrictSequenceWindow();
+        sequence.Validate(1);
+
+        // Not committed yet, so validating the same next value is still valid.
+        sequence.Validate(1);
+
+        sequence.Commit(1);
+        Assert.Throws<NativeProtocolViolationException>(() => sequence.Validate(1));
+        Assert.Throws<NativeProtocolViolationException>(() => sequence.Validate(1));
+        sequence.Validate(2);
+    }
+
+    [Fact]
     public void Base64UrlRejectsWrongKeyLength()
     {
         Assert.Throws<NativeProtocolViolationException>(() => Base64Url.Decode("AQID", V2Protocol.PublicKeyBytes, "pub"));
