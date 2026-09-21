@@ -52,7 +52,11 @@ older Python setup has not been overwritten.
 
 5. On Windows, choose the target display in **Displays & input** and save it.
    Pointer speed is adjusted on the Mac (SideCursor Settings → pointer scale);
-   Windows maps Mac pointer units to the target display automatically.
+   Windows maps Mac pointer units to the target display automatically. Leave
+   **Unaccelerated 1:1 pointer movement** enabled unless you prefer Windows
+   pointer acceleration. On the Mac's **Input & Gestures** tab, **Motion
+   smoothing** (0–16 ms) caps the pointer send rate for high-polling mice, and
+   **Windows scroll speed** scales scroll forwarding (default one eighth).
 
 6. Move through the selected Mac display's right edge to enter Windows. Move
    through the selected Windows display's left edge to return.

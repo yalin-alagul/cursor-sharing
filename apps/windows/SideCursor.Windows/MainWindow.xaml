@@ -92,6 +92,8 @@
             <Button Content="Refresh display list" Click="OnRefreshDisplaysClick" HorizontalAlignment="Left" />
             <TextBlock Text="Pointer speed" FontSize="20" FontWeight="SemiBold" Margin="0,18,0,0" />
             <TextBlock Text="Pointer speed is set on the Mac (SideCursor Settings → pointer scale), which owns the raw trackpad input. Windows maps Mac pointer units to this display’s pixels automatically." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,4" />
+            <CheckBox x:Name="AbsolutePointerCheck" Content="Unaccelerated 1:1 pointer movement (recommended)" Margin="0,10,0,0" />
+            <TextBlock Text="Absolute movement bypasses Windows pointer acceleration and matches Mac motion exactly. Uncheck to fall back to accelerated relative motion." TextWrapping="Wrap" Foreground="DimGray" Margin="0,2,0,0" />
             <TextBlock Text="Return-edge inset (physical pixels)" Margin="0,14,0,0" />
             <TextBox x:Name="ReturnEdgeInsetText" />
             <Separator Margin="0,14,0,12" />

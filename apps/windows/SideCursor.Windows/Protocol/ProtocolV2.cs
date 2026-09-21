@@ -518,25 +518,27 @@ public sealed class V2SecureChannel : IAsyncDisposable
                 var aad = new byte[sizeof(ulong)];
                 BinaryPrimitives.WriteUInt64BigEndian(aad, sequence);
                 var ciphertext = Encrypt(plaintext, nonce, aad);
-                var lengthHeader = new byte[sizeof(uint)];
+                // Assemble the whole frame into one buffer so it is written in
+                // a single syscall. Four separate WriteAsync calls per pointer
+                // sample added avoidable latency at high input rates.
+                var payloadLength = checked((uint)(aad.Length + nonce.Length + ciphertext.Length));
+                var frame = new byte[sizeof(uint) + payloadLength];
                 try
                 {
-                    BinaryPrimitives.WriteUInt32BigEndian(
-                        lengthHeader,
-                        checked((uint)(aad.Length + nonce.Length + ciphertext.Length)));
-                    await _stream.WriteAsync(lengthHeader, cancellationToken).ConfigureAwait(false);
-                    await _stream.WriteAsync(aad, cancellationToken).ConfigureAwait(false);
-                    await _stream.WriteAsync(nonce, cancellationToken).ConfigureAwait(false);
-                    await _stream.WriteAsync(ciphertext, cancellationToken).ConfigureAwait(false);
+                    BinaryPrimitives.WriteUInt32BigEndian(frame, payloadLength);
+                    aad.CopyTo(frame, sizeof(uint));
+                    nonce.CopyTo(frame, sizeof(uint) + aad.Length);
+                    ciphertext.CopyTo(frame, sizeof(uint) + aad.Length + nonce.Length);
+                    await _stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
                     await _stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                     _sendSequence = sequence;
                 }
                 finally
                 {
-                    CryptographicOperations.ZeroMemory(lengthHeader);
                     CryptographicOperations.ZeroMemory(aad);
                     CryptographicOperations.ZeroMemory(nonce);
                     CryptographicOperations.ZeroMemory(ciphertext);
+                    CryptographicOperations.ZeroMemory(frame);
                 }
             }
             finally

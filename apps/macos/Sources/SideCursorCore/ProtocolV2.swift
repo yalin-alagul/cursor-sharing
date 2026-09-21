@@ -411,6 +411,11 @@ public struct EncryptedFrameCodec {
     private let noncePrefix: Data
     private var nextOutboundSequence: UInt64 = 0
     private var lastInboundSequence: UInt64 = 0
+    /// Reused across frames; constructing a JSON coder per pointer sample was a
+    /// measurable part of the input hot path.  Codec calls are serialized by
+    /// `EncryptedPeerConnection`'s lock.
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
     public init(sessionKey: SymmetricKey) {
         self.sessionKey = sessionKey
@@ -424,7 +429,7 @@ public struct EncryptedFrameCodec {
 
     /// Returns the bytes after the uint32 big-endian length prefix.
     public mutating func seal(_ message: ProtocolMessage) throws -> Data {
-        let plaintext = try JSONEncoder().encode(message)
+        let plaintext = try encoder.encode(message)
         guard plaintext.count <= ProtocolV2.maximumFrameBytes else { throw ProtocolError.frameTooLarge }
         guard nextOutboundSequence < UInt64.max else { throw ProtocolError.malformedFrame }
         nextOutboundSequence += 1
@@ -440,6 +445,8 @@ public struct EncryptedFrameCodec {
         )
 
         var body = Data()
+        // One allocation sized for the whole frame instead of four growing ones.
+        body.reserveCapacity(8 + 12 + sealed.ciphertext.count + 16)
         body.append(sequenceData)
         body.append(nonceData)
         body.append(sealed.ciphertext)
@@ -471,7 +478,7 @@ public struct EncryptedFrameCodec {
         let plaintext = try ChaChaPoly.open(sealed, using: sessionKey, authenticating: sequenceData)
         let message: ProtocolMessage
         do {
-            message = try JSONDecoder().decode(ProtocolMessage.self, from: plaintext)
+            message = try decoder.decode(ProtocolMessage.self, from: plaintext)
         } catch let error as ProtocolError {
             throw error
         } catch {
@@ -485,7 +492,10 @@ public struct EncryptedFrameCodec {
         guard body.count <= ProtocolV2.maximumFrameBytes, body.count <= Int(UInt32.max) else {
             throw ProtocolError.frameTooLarge
         }
-        return Data.uint32BE(UInt32(body.count)) + body
+        var framed = Data(capacity: 4 + body.count)
+        framed.append(Data.uint32BE(UInt32(body.count)))
+        framed.append(body)
+        return framed
     }
 
     public static func length(from header: Data) throws -> Int {

@@ -59,6 +59,13 @@ public struct SideCursorConfiguration: Codable, Equatable {
     public var sourceEdge: HorizontalEdge
     public var returnInset: Double
     public var pointerScale: Double
+    /// Fraction of each Mac scroll notch forwarded to Windows. The default 0.125
+    /// is an eighth; 1.0 would forward the local rate unchanged.
+    public var scrollScale: Double
+    /// Caps the remote pointer send rate. 0 sends every sample immediately
+    /// (lowest latency); 1...16 groups high-polling input into at most one frame
+    /// per interval in milliseconds.
+    public var motionCoalesceMilliseconds: Int
     public var clipboardEnabled: Bool
     public var clipboardMaximumBytes: Int
     public var pairingAccount: String
@@ -73,6 +80,8 @@ public struct SideCursorConfiguration: Codable, Equatable {
         sourceEdge: HorizontalEdge = .right,
         returnInset: Double = 8,
         pointerScale: Double = 1.0,
+        scrollScale: Double = 0.125,
+        motionCoalesceMilliseconds: Int = 0,
         clipboardEnabled: Bool = true,
         clipboardMaximumBytes: Int = SideCursorConfiguration.maximumClipboardBytes,
         pairingAccount: String = UUID().uuidString,
@@ -86,6 +95,8 @@ public struct SideCursorConfiguration: Codable, Equatable {
         self.sourceEdge = sourceEdge
         self.returnInset = max(4, min(160, returnInset))
         self.pointerScale = max(0.1, min(4.0, pointerScale))
+        self.scrollScale = max(0.02, min(1.0, scrollScale))
+        self.motionCoalesceMilliseconds = max(0, min(16, motionCoalesceMilliseconds))
         self.clipboardEnabled = clipboardEnabled
         self.clipboardMaximumBytes = max(1, min(SideCursorConfiguration.maximumClipboardBytes, clipboardMaximumBytes))
         self.pairingAccount = pairingAccount
@@ -101,6 +112,8 @@ public struct SideCursorConfiguration: Codable, Equatable {
         case sourceEdge
         case returnInset
         case pointerScale
+        case scrollScale
+        case motionCoalesceMilliseconds
         case clipboardEnabled
         case clipboardMaximumBytes
         case pairingAccount
@@ -123,6 +136,8 @@ public struct SideCursorConfiguration: Codable, Equatable {
             sourceEdge: try container.decodeIfPresent(HorizontalEdge.self, forKey: .sourceEdge) ?? defaults.sourceEdge,
             returnInset: try container.decodeIfPresent(Double.self, forKey: .returnInset) ?? defaults.returnInset,
             pointerScale: try container.decodeIfPresent(Double.self, forKey: .pointerScale) ?? defaults.pointerScale,
+            scrollScale: try container.decodeIfPresent(Double.self, forKey: .scrollScale) ?? defaults.scrollScale,
+            motionCoalesceMilliseconds: try container.decodeIfPresent(Int.self, forKey: .motionCoalesceMilliseconds) ?? defaults.motionCoalesceMilliseconds,
             clipboardEnabled: try container.decodeIfPresent(Bool.self, forKey: .clipboardEnabled) ?? defaults.clipboardEnabled,
             clipboardMaximumBytes: try container.decodeIfPresent(Int.self, forKey: .clipboardMaximumBytes) ?? defaults.clipboardMaximumBytes,
             pairingAccount: try container.decodeIfPresent(String.self, forKey: .pairingAccount) ?? defaults.pairingAccount,
