@@ -79,7 +79,10 @@ public final class SessionController: ObservableObject {
             }
         }
         clipboard.start { [weak self] text in
-            Task { @MainActor in self?.sendLocalClipboard(text) }
+            guard let self else { return }
+            Task { @MainActor [self] in
+                self.sendLocalClipboard(text)
+            }
         }
         statusMessage = accessibilityGranted
             ? "Ready to start a paired listener"
