@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using SideCursor.Windows.Core;
 using SideCursor.Windows.Infrastructure;
@@ -36,7 +37,9 @@ public sealed class SideCursorRuntime : IAsyncDisposable
         _clipboard = clipboard;
         _configuration = configurationStore.Load();
         _configuration.Normalize();
-        _state.Changed += (_, snapshot) => PublishSnapshot(snapshot.Detail);
+        // Pass the event's own state: a forced disconnect raises Changed more
+        // than once, and re-reading the live snapshot would skip Recovering.
+        _state.Changed += (_, snapshot) => PublishSnapshot(snapshot.Detail, snapshot.State);
         _clipboard.ClipboardError += (_, message) => _diagnostics.Add(message);
     }
 
@@ -87,7 +90,7 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             }
 
             _diagnostics.Add("Settings saved.");
-            PublishSnapshot("Settings saved; reconnect to apply transport changes.");
+            PublishSnapshot("Settings saved; reconnect to apply changes to a live session.");
         }
         finally
         {
@@ -134,6 +137,18 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             _runTask = Task.Run(() => RunConnectionLoopAsync(_runCancellation.Token));
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>
+    /// Releases every key and mouse button SideCursor injected, without asking
+    /// the Mac to return control. Backs the "Release all injected input now"
+    /// button, which previously shared the Return-control handler.
+    /// </summary>
+    public void ReleaseInputNow()
+    {
+        ThrowIfDisposed();
+        ReleaseInputSafely("manual release requested");
+        PublishSnapshot("Released all injected Windows input.");
     }
 
     public async Task RequestLocalReturnAsync()
@@ -244,12 +259,19 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             {
                 break;
             }
-            catch (Exception exception) when (exception is IOException or SocketException or AuthenticationException or ProtocolViolationException or InputInjectionException or InvalidOperationException or Win32Exception or ArgumentException)
+            catch (Exception exception) when (exception is IOException or SocketException or AuthenticationException or ProtocolViolationException or InputInjectionException or InvalidOperationException or Win32Exception or ArgumentException or CryptographicException or InvalidDataException)
             {
                 _diagnostics.Add($"Connection recovery [{exception.GetType().Name}]: {exception.Message}");
-                _state.BeginRecovery($"Connection recovery: {exception.Message}");
-                ReleaseInputSafely("connection failure");
-                _state.FinishRecovery(peerStillConnected: false, "Disconnected; retrying");
+                TryRecoverFromConnectionFailure($"Connection recovery: {exception.Message}");
+            }
+            catch (Exception exception)
+            {
+                // A background retry loop must not die permanently on an
+                // unexpected error (for example a corrupt pairing secret that
+                // escapes the specific filter above). Log it, release input,
+                // and keep retrying with the normal backoff.
+                _diagnostics.Add($"Connection recovery [unexpected {exception.GetType().Name}]: {exception.Message}");
+                TryRecoverFromConnectionFailure($"Unexpected connection error: {exception.Message}");
             }
             finally
             {
@@ -344,7 +366,7 @@ public sealed class SideCursorRuntime : IAsyncDisposable
         PublishSnapshot(_state.Snapshot.Detail);
     }
 
-    private void PublishSnapshot(string detail)
+    private void PublishSnapshot(string detail, SessionState? state = null)
     {
         SideCursorConfig configuration;
         double? roundTrip;
@@ -361,18 +383,43 @@ public sealed class SideCursorRuntime : IAsyncDisposable
         {
             displayLabel = DisplayCatalog.ResolveTarget(configuration).Label;
         }
-        catch (InvalidOperationException)
+        catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
         {
             // The settings UI displays the configuration error separately.
+            // A native monitor-enumeration failure must not escape a status
+            // update, which also runs on every round-trip report.
         }
 
         StatusChanged?.Invoke(this, new RuntimeSnapshot(
-            _state.Snapshot.State,
+            state ?? _state.Snapshot.State,
             detail,
             configuration.Transport,
             roundTrip,
             bluetoothListening,
             displayLabel));
+    }
+
+    private void TryRecoverFromConnectionFailure(string reason)
+    {
+        try
+        {
+            _state.BeginRecovery(reason);
+        }
+        catch (Exception exception)
+        {
+            _diagnostics.Add($"State machine rejected recovery: {exception.Message}");
+        }
+
+        ReleaseInputSafely("connection failure");
+
+        try
+        {
+            _state.FinishRecovery(peerStillConnected: false, "Disconnected; retrying");
+        }
+        catch (Exception exception)
+        {
+            _diagnostics.Add($"State machine rejected recovery completion: {exception.Message}");
+        }
     }
 
     private void ReleaseInputSafely(string reason)
@@ -401,14 +448,12 @@ public sealed class SideCursorRuntime : IAsyncDisposable
             ReturnEdgeInsetPixels = source.ReturnEdgeInsetPixels,
             ClipboardEnabled = source.ClipboardEnabled,
             ClipboardMaximumBytes = source.ClipboardMaximumBytes,
-            BluetoothReadyOnly = source.BluetoothReadyOnly,
             Commands = new CommandBindings
             {
                 DesktopLeft = source.Commands.DesktopLeft,
                 DesktopRight = source.Commands.DesktopRight,
                 TaskView = source.Commands.TaskView,
                 ShowDesktop = source.Commands.ShowDesktop,
-                CloseTaskView = source.Commands.CloseTaskView,
             },
         };
     }

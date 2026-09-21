@@ -33,7 +33,7 @@
             <TextBlock x:Name="LatencyText" Grid.Row="2" Grid.Column="1" Text="Waiting for peer" />
             <TextBlock Grid.Row="3" Text="Target display" FontWeight="SemiBold" />
             <TextBlock x:Name="TargetDisplayStateText" Grid.Row="3" Grid.Column="1" Text="Not selected" TextWrapping="Wrap" />
-            <TextBlock Grid.Row="4" Text="Windows integrity" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="4" Text="Elevation" FontWeight="SemiBold" />
             <TextBlock x:Name="ElevationText" Grid.Row="4" Grid.Column="1" TextWrapping="Wrap" />
           </Grid>
           <StackPanel Orientation="Horizontal">
@@ -87,15 +87,11 @@
         <ScrollViewer VerticalScrollBarVisibility="Auto">
           <StackPanel Margin="16">
             <TextBlock Text="Windows target display" FontSize="20" FontWeight="SemiBold" />
-            <TextBlock Text="The selected stable monitor identity receives the Mac upper-display handoff. Windows sends a return request only at this display’s left edge." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,8" />
+            <TextBlock Text="The selected stable monitor identity receives the Mac handoff. Windows sends a return request only at this display’s left edge." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,8" />
             <ComboBox x:Name="TargetDisplayCombo" DisplayMemberPath="Label" Margin="0,3,0,6" />
             <Button Content="Refresh display list" Click="OnRefreshDisplaysClick" HorizontalAlignment="Left" />
-            <TextBlock Text="Pointer calibration" FontSize="20" FontWeight="SemiBold" Margin="0,18,0,0" />
-            <TextBlock Text="1.00 is the natural default; SideCursor does not apply the old 0.5 slow-down." Foreground="DimGray" Margin="0,6,0,4" />
-            <StackPanel Orientation="Horizontal">
-              <Slider x:Name="PointerCalibrationSlider" Minimum="0.1" Maximum="5" Value="1" Width="360" TickFrequency="0.1" IsSnapToTickEnabled="False" ValueChanged="OnPointerCalibrationChanged" />
-              <TextBlock x:Name="PointerCalibrationValue" Width="70" Margin="12,0,0,0" VerticalAlignment="Center" />
-            </StackPanel>
+            <TextBlock Text="Pointer speed" FontSize="20" FontWeight="SemiBold" Margin="0,18,0,0" />
+            <TextBlock Text="Pointer speed is set on the Mac (SideCursor Settings → pointer scale), which owns the raw trackpad input. Windows maps Mac pointer units to this display’s pixels automatically." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,4" />
             <TextBlock Text="Return-edge inset (physical pixels)" Margin="0,14,0,0" />
             <TextBox x:Name="ReturnEdgeInsetText" />
             <Separator Margin="0,14,0,12" />
@@ -135,8 +131,8 @@
           <TextBlock Text="Remote clipboard updates are tagged locally to prevent echo loops. Files, images, and rich clipboard formats are intentionally not transferred." TextWrapping="Wrap" Foreground="DimGray" />
           <Separator Margin="0,24,0,14" />
           <TextBlock Text="Safety" FontSize="20" FontWeight="SemiBold" />
-          <TextBlock Text="Connection loss, invalid encrypted frames, display removal, app exit, and Return control all release tracked Windows keys and mouse buttons before the session reconnects." TextWrapping="Wrap" />
-          <Button Content="Release all injected input now" Click="OnReturnClick" Margin="0,14,0,0" HorizontalAlignment="Left" />
+          <TextBlock Text="Connection loss, invalid encrypted frames, target-display removal, and Return control release tracked Windows keys and mouse buttons before the session reconnects. A forced process termination cannot release input, so use Return control (or the tray menu) before killing SideCursor." TextWrapping="Wrap" />
+          <Button Content="Release all injected input now" Click="OnReleaseInputClick" Margin="0,14,0,0" HorizontalAlignment="Left" />
           <Button Content="Save clipboard settings" Click="OnSaveSettingsClick" HorizontalAlignment="Left" />
         </StackPanel>
       </TabItem>

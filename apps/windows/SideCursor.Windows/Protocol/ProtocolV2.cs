@@ -449,14 +449,25 @@ public sealed class StrictSequenceWindow
 
     public ulong LastSequence => _lastSequence;
 
-    public void ValidateAndAdvance(ulong sequence)
+    /// Validates without advancing, so the caller can authenticate the frame
+    /// first and only commit the sequence once the AEAD tag has verified.
+    public void Validate(ulong sequence)
     {
         if (sequence == 0 || _lastSequence == ulong.MaxValue || sequence != _lastSequence + 1)
         {
             throw new ProtocolViolationException("Encrypted frame sequence is not exactly increasing.");
         }
+    }
 
+    public void Commit(ulong sequence)
+    {
         _lastSequence = sequence;
+    }
+
+    public void ValidateAndAdvance(ulong sequence)
+    {
+        Validate(sequence);
+        Commit(sequence);
     }
 }
 
@@ -559,11 +570,15 @@ public sealed class V2SecureChannel : IAsyncDisposable
 
             await V2Handshake.ReadExactlyAsync(_stream, sequenceBytes, cancellationToken).ConfigureAwait(false);
             var sequence = BinaryPrimitives.ReadUInt64BigEndian(sequenceBytes);
-            _receiveSequence.ValidateAndAdvance(sequence);
+            // Validate the sequence now, but only commit it after the AEAD tag
+            // verifies.  Advancing before authentication would let a forged
+            // frame burn the next sequence and force teardown of a valid one.
+            _receiveSequence.Validate(sequence);
             await V2Handshake.ReadExactlyAsync(_stream, nonce, cancellationToken).ConfigureAwait(false);
             ciphertext = new byte[checked((int)payloadLength - sizeof(ulong) - V2Protocol.AeadNonceBytes)];
             await V2Handshake.ReadExactlyAsync(_stream, ciphertext, cancellationToken).ConfigureAwait(false);
             plaintext = Decrypt(ciphertext, nonce, sequenceBytes);
+            _receiveSequence.Commit(sequence);
             using var document = JsonDocument.Parse(plaintext);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {

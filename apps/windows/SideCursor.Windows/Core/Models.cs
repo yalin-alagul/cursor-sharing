@@ -31,11 +31,15 @@ public sealed class SideCursorConfig
     public string PeerHost { get; set; } = string.Empty;
     public int PeerPort { get; set; } = 24800;
     public string TargetDisplayId { get; set; } = string.Empty;
+    /// <summary>
+    /// Legacy setting retained so older settings files still deserialize. It is
+    /// no longer applied: macOS `pointerScale` is the single user-facing
+    /// pointer-speed control, and applying this on top double-scaled motion.
+    /// </summary>
     public double PointerCalibration { get; set; } = 1.0;
     public int ReturnEdgeInsetPixels { get; set; } = 1;
     public bool ClipboardEnabled { get; set; } = true;
     public int ClipboardMaximumBytes { get; set; } = MaximumClipboardBytes;
-    public bool BluetoothReadyOnly { get; set; } = true;
     public CommandBindings Commands { get; set; } = new();
 
     public void Normalize()
@@ -63,7 +67,6 @@ public sealed class CommandBindings
     public string DesktopRight { get; set; } = "WIN+CTRL+RIGHT";
     public string TaskView { get; set; } = "WIN+TAB";
     public string ShowDesktop { get; set; } = "WIN+D";
-    public string CloseTaskView { get; set; } = "ESCAPE";
 
     public void Normalize()
     {
@@ -71,7 +74,6 @@ public sealed class CommandBindings
         DesktopRight = NormalizeChord(DesktopRight, "WIN+CTRL+RIGHT");
         TaskView = NormalizeChord(TaskView, "WIN+TAB");
         ShowDesktop = NormalizeChord(ShowDesktop, "WIN+D");
-        CloseTaskView = NormalizeChord(CloseTaskView, "ESCAPE");
     }
 
     public string? GetForCommand(string command) => command switch
@@ -80,7 +82,6 @@ public sealed class CommandBindings
         "desktop_right" => DesktopRight,
         "task_view" => TaskView,
         "show_desktop" => ShowDesktop,
-        "close_task_view" => CloseTaskView,
         _ => null,
     };
 
@@ -303,7 +304,7 @@ public sealed class HotkeyChord
             return true;
         }
 
-        if (raw.Length is 2 or 3 && raw.StartsWith('F') && int.TryParse(raw[1..], CultureInfo.InvariantCulture, out var function) && function is >= 1 and <= 24)
+        if (raw.Length is 2 or 3 && raw.StartsWith("F", StringComparison.OrdinalIgnoreCase) && int.TryParse(raw[1..], CultureInfo.InvariantCulture, out var function) && function is >= 1 and <= 24)
         {
             key = (ushort)(0x70 + function - 1);
             return true;
