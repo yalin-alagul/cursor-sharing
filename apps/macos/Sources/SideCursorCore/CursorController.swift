@@ -76,9 +76,18 @@ public final class ProductionCursorPlatform: CursorPlatform {
     }
 
     public func restoreRememberedApplication() {
-        defer { previousApplication = nil }
-        guard let previousApplication, !previousApplication.isTerminated else { return }
-        previousApplication.activate(options: [.activateIgnoringOtherApps])
+        guard let previousApplication, !previousApplication.isTerminated else {
+            self.previousApplication = nil
+            return
+        }
+        let app = previousApplication
+        self.previousApplication = nil
+        // Activation can stall the run loop (focus transition). Defer it so
+        // returning the cursor is never delayed while input is still
+        // suppressed, which would show up as a brief pointer freeze.
+        DispatchQueue.main.async {
+            app.activate(options: [.activateIgnoringOtherApps])
+        }
     }
 
     public func disassociateMouse() -> CGError {
