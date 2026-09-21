@@ -600,6 +600,16 @@ public final class SessionController: ObservableObject {
                     t2.timeIntervalSince(t1) * 1_000,
                     t2.timeIntervalSince(t0) * 1_000
                 ))
+                // Measure how long the main run loop stays blocked after a
+                // return.  A long resume delay is what a user perceives as the
+                // pointer freezing before it starts moving again.
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let resumeDelay = Date().timeIntervalSince(t2) * 1_000
+                    if resumeDelay > 40 {
+                        self.logDiagnostic(String(format: "return main-thread resume=%.1fms", resumeDelay))
+                    }
+                }
                 statusMessage = "Returned to Mac control."
             } catch {
                 recover(reason: error.localizedDescription)
