@@ -50,8 +50,9 @@ older Python setup has not been overwritten.
    **Input Monitoring**, enable it there. In **Display Route**, choose only the
    upper external 4K display as the source.
 
-5. On Windows, choose the Dell display in **Displays & input** and save it.
-   The natural pointer scale is **1.00**; adjust it only after testing.
+5. On Windows, choose the target display in **Displays & input** and save it.
+   Pointer speed is adjusted on the Mac (SideCursor Settings → pointer scale);
+   Windows maps Mac pointer units to the target display automatically.
 
 6. Move through the selected Mac display's right edge to enter Windows. Move
    through the selected Windows display's left edge to return.

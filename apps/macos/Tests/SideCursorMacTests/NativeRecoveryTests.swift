@@ -335,6 +335,97 @@ final class NativeRecoveryTests: XCTestCase {
         listener.stop()
     }
 
+    /// Validates the shared fixture that both native suites must agree on,
+    /// mirroring the Windows `MacInteropFixtureDerivesAndReadsTheExactV2Frame`
+    /// test so the macOS side can no longer drift from `shared/protocol.md`.
+    func testSharedInteropVectorsValidateNativeProtocol() throws {
+        let root = try interopVectors()
+        let pairingSecret = try vectorData(root, "pairingSecret")
+        let serverPrivateBytes = try vectorData(root, "serverPrivate")
+        let serverPublic = try vectorData(root, "serverPublic")
+        let clientPublicBytes = try vectorData(root, "clientPublic")
+        let serverNonce = try vectorData(root, "serverNonce")
+        let clientNonce = try vectorData(root, "clientNonce")
+        let expectedSessionKey = try vectorData(root, "sessionKey")
+        let pairProof = try vectorData(root, "pairProof")
+        let acceptProof = try vectorData(root, "acceptProof")
+
+        let serverPrivate = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: serverPrivateBytes)
+        XCTAssertEqual(serverPrivate.publicKey.rawRepresentation, serverPublic)
+
+        let expectedPairProof = ProtocolCrypto.hmac(
+            key: SymmetricKey(data: pairingSecret),
+            data: serverPublic + clientPublicBytes + serverNonce + clientNonce
+        )
+        XCTAssertEqual(expectedPairProof, pairProof)
+
+        let clientPublic = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: clientPublicBytes)
+        let sharedSecret = try serverPrivate.sharedSecretFromKeyAgreement(with: clientPublic)
+        let sessionKey = ProtocolCrypto.deriveSessionKey(
+            sharedSecret: sharedSecret,
+            pairingSecret: pairingSecret,
+            serverNonce: serverNonce,
+            clientNonce: clientNonce
+        )
+        XCTAssertEqual(sessionKey.withUnsafeBytes { Data($0) }, expectedSessionKey)
+
+        let expectedAcceptProof = ProtocolCrypto.hmac(key: sessionKey, data: Data("accept".utf8))
+        XCTAssertEqual(expectedAcceptProof, acceptProof)
+
+        // `frame.combined` is the AEAD body (nonce || ciphertext || tag); the
+        // wire frame prepends the uint64-be sequence, exactly as
+        // `EncryptedFrameCodec.open` expects.
+        let frame = try XCTUnwrap(root["frame"] as? [String: Any])
+        let sequence = try XCTUnwrap(frame["sequence"] as? NSNumber).uint64Value
+        let combined = try vectorData(frame, "combined")
+        var body = Data()
+        for shift in stride(from: 56, through: 0, by: -8) {
+            body.append(UInt8((sequence >> UInt64(shift)) & 0xff))
+        }
+        body.append(combined)
+
+        var receiver = EncryptedFrameCodec(sessionKey: sessionKey)
+        XCTAssertEqual(try receiver.open(body), .ping(sentAtMs: 123))
+    }
+
+    func testClientAndServerHandshakeAgreeOnSessionKey() throws {
+        let pairingSecret = Data((0..<32).map(UInt8.init))
+        let server = try ServerHandshake(pairingSecret: pairingSecret)
+        let client = try ClientHandshake(hello: server.hello, pairingSecret: pairingSecret)
+        let pair = client.makePairMessage()
+        let (accept, serverKey) = try server.accept(pair)
+        let clientKey = try client.complete(accept)
+
+        XCTAssertEqual(
+            serverKey.withUnsafeBytes { Data($0) },
+            clientKey.withUnsafeBytes { Data($0) }
+        )
+    }
+
+    private func interopVectors() throws -> [String: Any] {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let url = repositoryRoot.appendingPathComponent("shared/interop-vectors.json")
+        let data = try Data(contentsOf: url)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func vectorData(_ container: [String: Any], _ key: String) throws -> Data {
+        let encoded = try XCTUnwrap(container[key] as? String)
+        var padded = encoded
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = padded.count % 4
+        if remainder != 0 {
+            padded.append(String(repeating: "=", count: 4 - remainder))
+        }
+        return try XCTUnwrap(Data(base64Encoded: padded))
+    }
+
     private func makeDisplay() -> DisplayDescriptor {
         DisplayDescriptor(
             stableID: "source",
