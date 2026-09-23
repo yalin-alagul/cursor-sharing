@@ -56,11 +56,30 @@ public struct InputSource: Codable, Equatable {
     public let display: String
     public let width: Int
     public let height: Int
+    /// Physical size of the source display, so Windows can move the pointer
+    /// the same physical distance the Mac pointer would have moved.
+    public let widthMm: Double?
+    public let heightMm: Double?
 
-    public init(display: String, width: Int, height: Int) {
+    public init(display: String, width: Int, height: Int, widthMm: Double? = nil, heightMm: Double? = nil) {
         self.display = display
         self.width = width
         self.height = height
+        self.widthMm = widthMm
+        self.heightMm = heightMm
+    }
+}
+
+/// The Windows display and pixel the pointer enters at, from the layout.
+public struct EnterTarget: Codable, Equatable {
+    public let display: String
+    public let x: Int
+    public let y: Int
+
+    public init(display: String, x: Int, y: Int) {
+        self.display = display
+        self.x = x
+        self.y = y
     }
 }
 
@@ -68,11 +87,29 @@ public struct EnterRequest: Codable, Equatable {
     public let id: UUID
     public let y: Double
     public let source: InputSource
+    public let target: EnterTarget?
 
-    public init(id: UUID, y: Double, source: InputSource) {
+    public init(id: UUID, y: Double, source: InputSource, target: EnterTarget? = nil) {
         self.id = id
         self.y = min(1, max(0, y))
         self.source = source
+        self.target = target
+    }
+}
+
+/// Where the pointer should reappear on the Mac, on the edge of `display`
+/// it returned through, in Quartz points.
+public struct ReturnPoint: Codable, Equatable {
+    public let display: String
+    public let edge: ScreenEdge
+    public let x: Double
+    public let y: Double
+
+    public init(display: String, edge: ScreenEdge, x: Double, y: Double) {
+        self.display = display
+        self.edge = edge
+        self.x = x
+        self.y = y
     }
 }
 
@@ -171,12 +208,16 @@ public enum ProtocolMessage: Equatable {
     case enterReject(id: UUID, reason: String)
     case input(NativeInputEvent)
     case command(name: String)
-    case returnRequest(id: UUID, y: Double)
+    case returnRequest(id: UUID, y: Double, mac: ReturnPoint?)
     case returnAck(id: UUID)
     case releaseAll(reason: String)
     case clipboard(origin: String, text: String)
     case ping(sentAtMs: Int64)
     case pong(sentAtMs: Int64)
+    /// Windows → Mac: the Windows displays and their physical sizes.
+    case displays([RemoteDisplay])
+    /// Mac → Windows: effective Windows display sizes and return zones.
+    case layout(LayoutUpdate)
 }
 
 extension ProtocolMessage: Codable {
@@ -191,6 +232,10 @@ extension ProtocolMessage: Codable {
         case origin
         case text
         case sentAtMs
+        case target
+        case mac
+        case displays
+        case zones
     }
 
     public init(from decoder: Decoder) throws {
@@ -200,7 +245,8 @@ extension ProtocolMessage: Codable {
             self = .enterRequest(EnterRequest(
                 id: try container.decode(UUID.self, forKey: .id),
                 y: try container.decode(Double.self, forKey: .y),
-                source: try container.decode(InputSource.self, forKey: .source)
+                source: try container.decode(InputSource.self, forKey: .source),
+                target: try container.decodeIfPresent(EnterTarget.self, forKey: .target)
             ))
         case "enter_ack":
             self = .enterAck(id: try container.decode(UUID.self, forKey: .id))
@@ -216,7 +262,8 @@ extension ProtocolMessage: Codable {
         case "return_request":
             self = .returnRequest(
                 id: try container.decode(UUID.self, forKey: .id),
-                y: try container.decode(Double.self, forKey: .y)
+                y: try container.decode(Double.self, forKey: .y),
+                mac: try container.decodeIfPresent(ReturnPoint.self, forKey: .mac)
             )
         case "return_ack":
             self = .returnAck(id: try container.decode(UUID.self, forKey: .id))
@@ -231,6 +278,13 @@ extension ProtocolMessage: Codable {
             self = .ping(sentAtMs: try container.decode(Int64.self, forKey: .sentAtMs))
         case "pong":
             self = .pong(sentAtMs: try container.decode(Int64.self, forKey: .sentAtMs))
+        case "displays":
+            self = .displays(try container.decode([RemoteDisplay].self, forKey: .displays))
+        case "layout":
+            self = .layout(LayoutUpdate(
+                displays: try container.decode([LayoutUpdate.DisplaySize].self, forKey: .displays),
+                zones: try container.decode([ReturnZone].self, forKey: .zones)
+            ))
         default:
             throw ProtocolError.malformedMessage
         }
@@ -244,6 +298,7 @@ extension ProtocolMessage: Codable {
             try container.encode(request.id, forKey: .id)
             try container.encode(request.y, forKey: .y)
             try container.encode(request.source, forKey: .source)
+            try container.encodeIfPresent(request.target, forKey: .target)
         case let .enterAck(id):
             try container.encode("enter_ack", forKey: .type)
             try container.encode(id, forKey: .id)
@@ -257,10 +312,11 @@ extension ProtocolMessage: Codable {
         case let .command(name):
             try container.encode("command", forKey: .type)
             try container.encode(name, forKey: .name)
-        case let .returnRequest(id, y):
+        case let .returnRequest(id, y, mac):
             try container.encode("return_request", forKey: .type)
             try container.encode(id, forKey: .id)
             try container.encode(min(1, max(0, y)), forKey: .y)
+            try container.encodeIfPresent(mac, forKey: .mac)
         case let .returnAck(id):
             try container.encode("return_ack", forKey: .type)
             try container.encode(id, forKey: .id)
@@ -280,6 +336,13 @@ extension ProtocolMessage: Codable {
         case let .pong(sentAtMs):
             try container.encode("pong", forKey: .type)
             try container.encode(sentAtMs, forKey: .sentAtMs)
+        case let .displays(displays):
+            try container.encode("displays", forKey: .type)
+            try container.encode(displays, forKey: .displays)
+        case let .layout(update):
+            try container.encode("layout", forKey: .type)
+            try container.encode(update.displays, forKey: .displays)
+            try container.encode(update.zones, forKey: .zones)
         }
     }
 }

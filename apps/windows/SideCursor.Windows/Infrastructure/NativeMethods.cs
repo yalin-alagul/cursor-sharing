@@ -5,6 +5,7 @@ namespace SideCursor.Windows.Infrastructure;
 
 internal static class NativeMethods
 {
+    internal const uint EddGetDeviceInterfaceName = 0x00000001;
     internal const uint InputMouse = 0;
     internal const uint InputKeyboard = 1;
     internal const uint MouseeventfMove = 0x0001;

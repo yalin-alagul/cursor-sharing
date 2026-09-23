@@ -70,6 +70,8 @@ public struct SideCursorConfiguration: Codable, Equatable {
     public var clipboardMaximumBytes: Int
     public var pairingAccount: String
     public var remoteHotkeys: RemoteHotkeys
+    /// Where the Windows displays sit around the Mac displays, physically.
+    public var layout: DisplayLayoutConfiguration
 
     public init(
         transport: TransportKind = .tailscaleTCP,
@@ -85,7 +87,8 @@ public struct SideCursorConfiguration: Codable, Equatable {
         clipboardEnabled: Bool = true,
         clipboardMaximumBytes: Int = SideCursorConfiguration.maximumClipboardBytes,
         pairingAccount: String = UUID().uuidString,
-        remoteHotkeys: RemoteHotkeys = RemoteHotkeys()
+        remoteHotkeys: RemoteHotkeys = RemoteHotkeys(),
+        layout: DisplayLayoutConfiguration = DisplayLayoutConfiguration()
     ) {
         self.transport = transport
         self.listenPort = max(1, min(65_535, listenPort))
@@ -101,6 +104,7 @@ public struct SideCursorConfiguration: Codable, Equatable {
         self.clipboardMaximumBytes = max(1, min(SideCursorConfiguration.maximumClipboardBytes, clipboardMaximumBytes))
         self.pairingAccount = pairingAccount
         self.remoteHotkeys = remoteHotkeys
+        self.layout = layout
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -118,6 +122,7 @@ public struct SideCursorConfiguration: Codable, Equatable {
         case clipboardMaximumBytes
         case pairingAccount
         case remoteHotkeys
+        case layout
     }
 
     /// Decoding re-applies the same clamps as the memberwise initializer.  A
@@ -141,7 +146,9 @@ public struct SideCursorConfiguration: Codable, Equatable {
             clipboardEnabled: try container.decodeIfPresent(Bool.self, forKey: .clipboardEnabled) ?? defaults.clipboardEnabled,
             clipboardMaximumBytes: try container.decodeIfPresent(Int.self, forKey: .clipboardMaximumBytes) ?? defaults.clipboardMaximumBytes,
             pairingAccount: try container.decodeIfPresent(String.self, forKey: .pairingAccount) ?? defaults.pairingAccount,
-            remoteHotkeys: try container.decodeIfPresent(RemoteHotkeys.self, forKey: .remoteHotkeys) ?? defaults.remoteHotkeys
+            remoteHotkeys: try container.decodeIfPresent(RemoteHotkeys.self, forKey: .remoteHotkeys) ?? defaults.remoteHotkeys,
+            // A damaged layout must not discard every other setting.
+            layout: (try? container.decodeIfPresent(DisplayLayoutConfiguration.self, forKey: .layout)) ?? defaults.layout
         )
     }
 }
@@ -219,6 +226,9 @@ public struct DisplayDescriptor: Identifiable, Codable, Equatable {
     public let bounds: DisplayBounds
     public let isBuiltIn: Bool
     public let isMain: Bool
+    /// Physical size reported by the display, oriented like `bounds`, or nil
+    /// when the display does not report a usable size.
+    public let sizeMm: MillimeterSize?
 
     public var id: String { stableID }
 
@@ -228,7 +238,8 @@ public struct DisplayDescriptor: Identifiable, Codable, Equatable {
         name: String,
         bounds: DisplayBounds,
         isBuiltIn: Bool,
-        isMain: Bool
+        isMain: Bool,
+        sizeMm: MillimeterSize? = nil
     ) {
         self.stableID = stableID
         self.runtimeID = runtimeID
@@ -236,7 +247,10 @@ public struct DisplayDescriptor: Identifiable, Codable, Equatable {
         self.bounds = bounds
         self.isBuiltIn = isBuiltIn
         self.isMain = isMain
+        self.sizeMm = sizeMm
     }
+
+    public var cgBounds: CGRect { CGRect(x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height) }
 }
 
 public struct EdgeRoute: Equatable {
@@ -324,13 +338,17 @@ public enum DisplayCatalog {
             } else {
                 stableID = "display-\(vendor)-\(model)-\(serial)"
             }
+            let bounds = CGDisplayBounds(displayID)
+            let reported = CGDisplayScreenSize(displayID)
+            let sizeMm = MillimeterSize(width: reported.width, height: reported.height).oriented(toMatch: bounds.size)
             return DisplayDescriptor(
                 stableID: stableID,
                 runtimeID: displayID,
                 name: screen?.localizedName ?? "Display \(displayID)",
-                bounds: DisplayBounds(CGDisplayBounds(displayID)),
+                bounds: DisplayBounds(bounds),
                 isBuiltIn: CGDisplayIsBuiltin(displayID) != 0,
-                isMain: displayID == CGMainDisplayID()
+                isMain: displayID == CGMainDisplayID(),
+                sizeMm: sizeMm.isUsable ? sizeMm : nil
             )
         }
     }
