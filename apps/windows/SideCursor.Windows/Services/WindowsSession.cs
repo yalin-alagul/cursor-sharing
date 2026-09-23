@@ -243,6 +243,9 @@ public sealed class WindowsSession : IDisposable
             case "scroll":
                 _input.InjectScroll(ReadFiniteDouble(input, "horizontal"), ReadFiniteDouble(input, "vertical"));
                 break;
+            case "zoom":
+                _input.InjectZoom(ReadIntInRange(input, "steps", -20, 20));
+                break;
             case "key":
                 _input.InjectKey((ushort)ReadIntInRange(input, "vk", 1, ushort.MaxValue), ReadBoolean(input, "down"), ReadOptionalBoolean(input, "extended"));
                 break;

@@ -27,6 +27,9 @@ internal readonly record struct PressedKey(ushort Vk, bool Extended);
 
 public sealed class WindowsInputInjector
 {
+    private const ushort VkControl = 0x11;
+    private const ushort VkLeftControl = 0xA2;
+    private const ushort VkRightControl = 0xA3;
     private readonly object _gate = new();
     private readonly RelativeMotionMapper _motionMapper = new();
     private readonly HashSet<PressedKey> _pressedKeys = [];
@@ -162,6 +165,35 @@ public sealed class WindowsInputInjector
                 SendMouse(0, 0, ToWheelDelta(horizontal), NativeMethods.MouseeventfHWheel);
             }
         }
+    }
+
+    /// <summary>
+    /// Replays a Mac trackpad pinch as Ctrl+wheel, the zoom input Windows
+    /// apps (and precision touchpads) use. Ctrl is pressed and released in
+    /// the same SendInput batch so it can never be left stuck down, and is
+    /// skipped when the user is already holding a forwarded Ctrl key.
+    /// </summary>
+    public void InjectZoom(int steps)
+    {
+        if (steps == 0)
+        {
+            return;
+        }
+
+        lock (_gate)
+        {
+            EnsureTargetStillPresent(RequireTarget());
+            var ctrlHeld = _pressedKeys.Any(static key => key.Vk is VkControl or VkLeftControl or VkRightControl);
+            Send(BuildZoomInputs(steps, ctrlHeld));
+        }
+    }
+
+    internal static NativeMethods.Input[] BuildZoomInputs(int steps, bool ctrlHeld)
+    {
+        var wheel = MouseInput(0, 0, steps * NativeMethods.WheelDelta, NativeMethods.MouseeventfWheel);
+        return ctrlHeld
+            ? [wheel]
+            : [KeyInput(VkControl, down: true, extended: false), wheel, KeyInput(VkControl, down: false, extended: false)];
     }
 
     public void InjectKey(ushort virtualKey, bool down, bool extended)
@@ -398,7 +430,12 @@ public sealed class WindowsInputInjector
 
     private static void SendMouse(int dx, int dy, int mouseData, uint flags)
     {
-        var input = new NativeMethods.Input
+        Send([MouseInput(dx, dy, mouseData, flags)]);
+    }
+
+    private static NativeMethods.Input MouseInput(int dx, int dy, int mouseData, uint flags)
+    {
+        return new NativeMethods.Input
         {
             Type = NativeMethods.InputMouse,
             Data = new NativeMethods.InputUnion
@@ -412,12 +449,16 @@ public sealed class WindowsInputInjector
                 },
             },
         };
-        Send([input]);
     }
 
     private static void SendKey(ushort virtualKey, bool down, bool extended)
     {
-        var input = new NativeMethods.Input
+        Send([KeyInput(virtualKey, down, extended)]);
+    }
+
+    private static NativeMethods.Input KeyInput(ushort virtualKey, bool down, bool extended)
+    {
+        return new NativeMethods.Input
         {
             Type = NativeMethods.InputKeyboard,
             Data = new NativeMethods.InputUnion
@@ -430,7 +471,6 @@ public sealed class WindowsInputInjector
                 },
             },
         };
-        Send([input]);
     }
 
     private static void Send(NativeMethods.Input[] inputs)

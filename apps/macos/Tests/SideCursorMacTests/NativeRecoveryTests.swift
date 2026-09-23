@@ -118,6 +118,16 @@ final class NativeRecoveryTests: XCTestCase {
         XCTAssertFalse(guardState.shouldForwardLocalText("new local text"))
     }
 
+    func testZoomInputEventMatchesSharedProtocolShape() throws {
+        let encoded = try JSONEncoder().encode(NativeInputEvent.zoom(steps: -2))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["kind"] as? String, "zoom")
+        XCTAssertEqual(object["steps"] as? Int, -2)
+
+        let decoded = try JSONDecoder().decode(NativeInputEvent.self, from: Data(#"{"kind":"zoom","steps":3}"#.utf8))
+        XCTAssertEqual(decoded, .zoom(steps: 3))
+    }
+
     func testPairingCodeRoundTripsExactlyThirtyTwoBytes() throws {
         let original = Data((0..<32).map(UInt8.init))
         let code = try PairingCode.encode(original)

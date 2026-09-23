@@ -87,6 +87,8 @@ public enum NativeInputEvent: Equatable {
     case button(button: MouseButton, down: Bool)
     case scroll(horizontal: Int, vertical: Int)
     case key(vk: Int, down: Bool, extended: Bool)
+    /// Whole trackpad-pinch steps; positive zooms in (fingers apart).
+    case zoom(steps: Int)
 }
 
 extension NativeInputEvent: Codable {
@@ -100,6 +102,7 @@ extension NativeInputEvent: Codable {
         case vertical
         case vk
         case extended
+        case steps
     }
 
     public init(from decoder: Decoder) throws {
@@ -126,6 +129,8 @@ extension NativeInputEvent: Codable {
                 down: try container.decode(Bool.self, forKey: .down),
                 extended: try container.decodeIfPresent(Bool.self, forKey: .extended) ?? false
             )
+        case "zoom":
+            self = .zoom(steps: try container.decode(Int.self, forKey: .steps))
         default:
             throw ProtocolError.malformedMessage
         }
@@ -151,6 +156,9 @@ extension NativeInputEvent: Codable {
             try container.encode(vk, forKey: .vk)
             try container.encode(down, forKey: .down)
             try container.encode(extended, forKey: .extended)
+        case let .zoom(steps):
+            try container.encode("zoom", forKey: .kind)
+            try container.encode(steps, forKey: .steps)
         }
     }
 }

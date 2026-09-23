@@ -63,6 +63,31 @@ public sealed class ConfigurationAndInputTests
     }
 
     [Fact]
+    public void ZoomWrapsTheWheelInCtrlWithinOneBatch()
+    {
+        var inputs = WindowsInputInjector.BuildZoomInputs(2, ctrlHeld: false);
+
+        Assert.Equal(3, inputs.Length);
+        Assert.Equal(NativeMethods.InputKeyboard, inputs[0].Type);
+        Assert.Equal(0x11, inputs[0].Data.Keyboard.VirtualKey);
+        Assert.Equal(0u, inputs[0].Data.Keyboard.Flags & NativeMethods.KeyeventfKeyUp);
+        Assert.Equal(NativeMethods.MouseeventfWheel, inputs[1].Data.Mouse.Flags);
+        Assert.Equal(240, unchecked((int)inputs[1].Data.Mouse.MouseData));
+        Assert.Equal(0x11, inputs[2].Data.Keyboard.VirtualKey);
+        Assert.NotEqual(0u, inputs[2].Data.Keyboard.Flags & NativeMethods.KeyeventfKeyUp);
+    }
+
+    [Fact]
+    public void ZoomOutUsesNegativeWheelAndSkipsCtrlTheUserAlreadyHolds()
+    {
+        var inputs = WindowsInputInjector.BuildZoomInputs(-1, ctrlHeld: true);
+
+        var wheel = Assert.Single(inputs);
+        Assert.Equal(NativeMethods.InputMouse, wheel.Type);
+        Assert.Equal(-120, unchecked((int)wheel.Data.Mouse.MouseData));
+    }
+
+    [Fact]
     public void AbsolutePointerIsOnByDefaultForUnacceleratedMotion()
     {
         Assert.True(new SideCursorConfig().AbsolutePointer);
