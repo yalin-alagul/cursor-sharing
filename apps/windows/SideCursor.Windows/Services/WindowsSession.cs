@@ -47,6 +47,7 @@ public sealed class WindowsSession : IDisposable
         ArgumentNullException.ThrowIfNull(channel);
         _channel = channel;
         _clipboard.LocalTextChanged += OnLocalClipboardChanged;
+        _clipboard.LocalImageChanged += OnLocalImageChanged;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         try
         {
@@ -79,6 +80,7 @@ public sealed class WindowsSession : IDisposable
         finally
         {
             _clipboard.LocalTextChanged -= OnLocalClipboardChanged;
+            _clipboard.LocalImageChanged -= OnLocalImageChanged;
             SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             ReleaseInputSafely("session ended");
             _channel = null;
@@ -131,6 +133,7 @@ public sealed class WindowsSession : IDisposable
         }
 
         _clipboard.LocalTextChanged -= OnLocalClipboardChanged;
+        _clipboard.LocalImageChanged -= OnLocalImageChanged;
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _sessionCancellation.Cancel();
         _sessionCancellation.Dispose();
@@ -414,16 +417,45 @@ public sealed class WindowsSession : IDisposable
             throw new ProtocolViolationException("Message property 'text' is required.");
         }
 
-        var text = _clipboardAssembler.Add(
+        var format = message.TryGetProperty("format", out var formatValue) && formatValue.ValueKind == JsonValueKind.String
+            ? formatValue.GetString()
+            : ClipboardAssembler.TextFormat;
+        if (format is not (ClipboardAssembler.TextFormat or ClipboardAssembler.PngFormat))
+        {
+            throw new ProtocolViolationException("Clipboard format must be text or png.");
+        }
+
+        var maximumBytes = Math.Min(_configuration.ClipboardMaximumBytes, V2Protocol.MaximumClipboardBytes);
+        var completed = _clipboardAssembler.Add(
             ReadRequestId(message),
             ReadIntInRange(message, "index", 0, V2Protocol.MaximumClipboardParts - 1),
             ReadIntInRange(message, "count", 1, V2Protocol.MaximumClipboardParts),
+            format,
             textValue.GetString()!,
-            Math.Min(_configuration.ClipboardMaximumBytes, V2Protocol.MaximumClipboardBytes),
+            maximumBytes,
             V2Protocol.MaximumClipboardParts);
-        if (!string.IsNullOrEmpty(text))
+        if (completed is not { } content || content.Payload.Length == 0)
         {
-            _clipboard.ApplyRemoteText(text);
+            return;
+        }
+
+        if (content.Format == ClipboardAssembler.TextFormat)
+        {
+            _clipboard.ApplyRemoteText(content.Payload);
+            return;
+        }
+
+        try
+        {
+            var png = Convert.FromBase64String(content.Payload);
+            if (png.Length <= maximumBytes)
+            {
+                _clipboard.ApplyRemoteImage(png);
+            }
+        }
+        catch (FormatException)
+        {
+            _diagnostics.Add("An image from the Mac was damaged in transit and was not pasted.");
         }
     }
 
@@ -506,21 +538,35 @@ public sealed class WindowsSession : IDisposable
             return;
         }
 
-        _ = SendClipboardSafelyAsync(text);
+        _ = SendClipboardSafelyAsync(ClipboardAssembler.TextFormat, text, Encoding.UTF8.GetByteCount(text));
     }
 
-    private async Task SendClipboardSafelyAsync(string text)
+    private void OnLocalImageChanged(object? sender, byte[] png)
     {
+        if (!_configuration.ClipboardEnabled || Volatile.Read(ref _stopped) != 0)
+        {
+            return;
+        }
+
+        _ = SendClipboardSafelyAsync(ClipboardAssembler.PngFormat, Convert.ToBase64String(png), png.Length);
+    }
+
+    /// <param name="payload">The text, or base64 of PNG bytes for "png".</param>
+    /// <param name="size">Size the limit applies to: text bytes, or image bytes.</param>
+    private async Task SendClipboardSafelyAsync(string format, string payload, int size)
+    {
+        var text = payload;
         try
         {
-            if (Encoding.UTF8.GetByteCount(text) > Math.Min(_configuration.ClipboardMaximumBytes, V2Protocol.MaximumClipboardBytes))
+            if (size > Math.Min(_configuration.ClipboardMaximumBytes, V2Protocol.MaximumClipboardBytes))
             {
                 _diagnostics.Add("Local clipboard was not sent because it exceeds the configured limit.");
                 return;
             }
 
             var parts = ClipboardParts.Split(text, V2Protocol.ClipboardPartBytes);
-            if (parts.Count == 1)
+            // Images always go as parts, which carry their format.
+            if (parts.Count == 1 && format == ClipboardAssembler.TextFormat)
             {
                 // Bound the send so a wedged socket cannot hold the send gate
                 // open forever and silently stop clipboard sync.
@@ -541,7 +587,7 @@ public sealed class WindowsSession : IDisposable
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(transfer.Token);
                     timeout.CancelAfter(TimeSpan.FromSeconds(10));
                     await SendAsync(
-                        new { type = "clipboard_part", origin = _configuration.DeviceId, id, index, count = parts.Count, text = parts[index] },
+                        new { type = "clipboard_part", origin = _configuration.DeviceId, id, index, count = parts.Count, format, text = parts[index] },
                         timeout.Token).ConfigureAwait(false);
                 }
             }

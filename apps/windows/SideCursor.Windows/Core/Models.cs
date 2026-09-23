@@ -597,28 +597,42 @@ public static class ClipboardParts
 /// </summary>
 public sealed class ClipboardAssembler
 {
+    public const string TextFormat = "text";
+    public const string PngFormat = "png";
+
     private readonly List<string> _parts = [];
     private string? _id;
+    private string _format = TextFormat;
     private int _count;
     private long _bytes;
 
-    public string? Add(string id, int index, int count, string text, int maximumBytes, int maximumParts)
+    /// <param name="format">"text", or "png" when the payload is base64 of PNG bytes.</param>
+    /// <param name="maximumBytes">Limit on the text, or on the decoded image for "png".</param>
+    public (string Format, string Payload)? Add(string id, int index, int count, string format, string text, int maximumBytes, int maximumParts)
     {
         if (index == 0)
         {
             Reset();
             _id = id;
             _count = count;
+            _format = format;
         }
 
-        if (!string.Equals(id, _id, StringComparison.OrdinalIgnoreCase) || count != _count || count > maximumParts || index != _parts.Count)
+        if (!string.Equals(id, _id, StringComparison.OrdinalIgnoreCase))
+        {
+            // A leftover part of an older, replaced transfer: ignore it.
+            return null;
+        }
+
+        if (count != _count || format != _format || count > maximumParts || index != _parts.Count)
         {
             Reset();
             return null;
         }
 
         _bytes += System.Text.Encoding.UTF8.GetByteCount(text);
-        if (_bytes > maximumBytes)
+        var limit = _format == PngFormat ? ((long)maximumBytes + 2) / 3 * 4 : maximumBytes;
+        if (_bytes > limit)
         {
             Reset();
             return null;
@@ -630,7 +644,7 @@ public sealed class ClipboardAssembler
             return null;
         }
 
-        var complete = string.Concat(_parts);
+        var complete = (_format, string.Concat(_parts));
         Reset();
         return complete;
     }
@@ -639,7 +653,48 @@ public sealed class ClipboardAssembler
     {
         _parts.Clear();
         _id = null;
+        _format = TextFormat;
         _count = 0;
         _bytes = 0;
+    }
+}
+
+/// <summary>PNG helpers for clipboard images.</summary>
+public static class ClipboardImages
+{
+    private static readonly byte[] EndChunk = "IEND"u8.ToArray();
+
+    /// <summary>
+    /// Clipboard memory can be padded past the end of the PNG. Trims to the
+    /// IEND chunk (plus its CRC) so the same image always hashes the same.
+    /// </summary>
+    public static byte[] TrimToPngEnd(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var index = data.AsSpan().LastIndexOf(EndChunk);
+        return index >= 0 && index + 8 < data.Length ? data[..(index + 8)] : data;
+    }
+
+    public static byte[] ToPng(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return stream.ToArray();
+    }
+
+    public static System.Windows.Media.Imaging.BitmapSource FromPng(byte[] png)
+    {
+        ArgumentNullException.ThrowIfNull(png);
+        using var stream = new MemoryStream(png);
+        var decoder = new System.Windows.Media.Imaging.PngBitmapDecoder(
+            stream,
+            System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+            System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+        var frame = decoder.Frames[0];
+        frame.Freeze();
+        return frame;
     }
 }

@@ -164,10 +164,10 @@ public final class SessionController: ObservableObject {
             }
         }
         startPermissionPolling()
-        clipboard.start { [weak self] text in
+        clipboard.start { [weak self] content in
             guard let self else { return }
             Task { @MainActor [self] in
-                self.sendLocalClipboard(text)
+                self.sendLocalClipboard(content)
             }
         }
         statusMessage = accessibilityGranted
@@ -703,11 +703,11 @@ public final class SessionController: ObservableObject {
                   origin != configuration.pairingAccount,
                   text.lengthOfBytes(using: .utf8) <= configuration.clipboardMaximumBytes
             else { return }
-            clipboard.applyRemoteText(text)
+            clipboard.applyRemote(.text(text))
         case let .clipboardPart(part):
             guard configuration.clipboardEnabled, part.origin != configuration.pairingAccount else { return }
-            if let text = clipboardAssembler.add(part, maximumBytes: configuration.clipboardMaximumBytes) {
-                clipboard.applyRemoteText(text)
+            if let content = clipboardAssembler.add(part, maximumBytes: configuration.clipboardMaximumBytes) {
+                clipboard.applyRemote(content)
             }
         case let .ping(sentAtMs):
             peer?.send(.pong(sentAtMs: sentAtMs))
@@ -795,27 +795,38 @@ public final class SessionController: ObservableObject {
         )
     }
 
-    private func sendLocalClipboard(_ text: String) {
+    private func sendLocalClipboard(_ content: ClipboardContent) {
         guard configuration.clipboardEnabled,
-              text.lengthOfBytes(using: .utf8) <= configuration.clipboardMaximumBytes,
+              content.byteCount <= configuration.clipboardMaximumBytes,
               let peer
         else { return }
-        let parts = ClipboardParts.split(text, maximumBytes: ProtocolV2.clipboardPartBytes)
-        guard parts.count > 1 else {
+        let format: ClipboardFormat
+        let payload: String
+        switch content {
+        case let .text(text):
+            format = .text
+            payload = text
+        case let .png(data):
+            format = .png
+            payload = data.base64EncodedString()
+        }
+        let parts = ClipboardParts.split(payload, maximumBytes: ProtocolV2.clipboardPartBytes)
+        if format == .text, parts.count == 1 {
             clipboardTransferID = nil
-            peer.send(.clipboard(origin: configuration.pairingAccount, text: text))
+            peer.send(.clipboard(origin: configuration.pairingAccount, text: payload))
             return
         }
+        // Images always go as parts, which carry their format.
         let id = UUID()
         clipboardTransferID = id
-        sendClipboardPart(parts, index: 0, id: id, peer: peer)
+        sendClipboardPart(parts, format: format, index: 0, id: id, peer: peer)
     }
 
     /// Sends one part and queues the next only once it has gone out, so
     /// pointer input keeps flowing between parts.
-    private func sendClipboardPart(_ parts: [String], index: Int, id: UUID, peer: EncryptedPeerConnection) {
+    private func sendClipboardPart(_ parts: [String], format: ClipboardFormat, index: Int, id: UUID, peer: EncryptedPeerConnection) {
         guard index < parts.count, clipboardTransferID == id, self.peer === peer else { return }
-        let part = ClipboardPart(origin: configuration.pairingAccount, id: id, index: index, count: parts.count, text: parts[index])
+        let part = ClipboardPart(origin: configuration.pairingAccount, id: id, index: index, count: parts.count, format: format, text: parts[index])
         peer.send(.clipboardPart(part)) { [weak self] result in
             guard case .success = result else { return }
             DispatchQueue.main.async {
@@ -823,7 +834,7 @@ public final class SessionController: ObservableObject {
                 if index + 1 == parts.count {
                     if self.clipboardTransferID == id { self.clipboardTransferID = nil }
                 } else {
-                    self.sendClipboardPart(parts, index: index + 1, id: id, peer: peer)
+                    self.sendClipboardPart(parts, format: format, index: index + 1, id: id, peer: peer)
                 }
             }
         }
