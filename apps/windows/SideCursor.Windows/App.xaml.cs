@@ -52,7 +52,7 @@ public partial class App : System.Windows.Application
             var configurationStore = new ConfigurationStore(paths);
             var pairingSecretStore = new PairingSecretStore(paths);
             SideCursorRuntime? runtime = null;
-            _clipboard = new ClipboardSync(Dispatcher, () => runtime?.GetConfiguration().ClipboardMaximumBytes ?? 1024 * 1024);
+            _clipboard = new ClipboardSync(Dispatcher, () => runtime?.GetConfiguration().ClipboardMaximumBytes ?? Core.SideCursorConfig.MaximumClipboardBytes);
             _clipboard.Start();
             runtime = new SideCursorRuntime(configurationStore, pairingSecretStore, _clipboard);
             Runtime = runtime;

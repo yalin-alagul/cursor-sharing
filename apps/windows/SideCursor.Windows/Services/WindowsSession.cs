@@ -18,6 +18,8 @@ public sealed class WindowsSession : IDisposable
     private readonly DiagnosticLog _diagnostics;
     private readonly Action<double> _roundTripUpdated;
     private readonly CancellationTokenSource _sessionCancellation = new();
+    private readonly ClipboardAssembler _clipboardAssembler = new();
+    private CancellationTokenSource? _clipboardTransfer;
     private V2SecureChannel? _channel;
     private string? _returnRequestId;
     private int _stopped;
@@ -159,6 +161,9 @@ public sealed class WindowsSession : IDisposable
                 break;
             case "clipboard":
                 HandleClipboard(message);
+                break;
+            case "clipboard_part":
+                HandleClipboardPart(message);
                 break;
             case "ping":
                 await HandlePingAsync(message, cancellationToken).ConfigureAwait(false);
@@ -390,6 +395,38 @@ public sealed class WindowsSession : IDisposable
         _clipboard.ApplyRemoteText(text);
     }
 
+    /// <summary>One slice of a large clipboard text from the Mac.</summary>
+    private void HandleClipboardPart(JsonElement message)
+    {
+        if (!_configuration.ClipboardEnabled)
+        {
+            return;
+        }
+
+        var origin = RequiredString(message, "origin");
+        if (string.Equals(origin, _configuration.DeviceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!message.TryGetProperty("text", out var textValue) || textValue.ValueKind != JsonValueKind.String)
+        {
+            throw new ProtocolViolationException("Message property 'text' is required.");
+        }
+
+        var text = _clipboardAssembler.Add(
+            ReadRequestId(message),
+            ReadIntInRange(message, "index", 0, V2Protocol.MaximumClipboardParts - 1),
+            ReadIntInRange(message, "count", 1, V2Protocol.MaximumClipboardParts),
+            textValue.GetString()!,
+            Math.Min(_configuration.ClipboardMaximumBytes, V2Protocol.MaximumClipboardBytes),
+            V2Protocol.MaximumClipboardParts);
+        if (!string.IsNullOrEmpty(text))
+        {
+            _clipboard.ApplyRemoteText(text);
+        }
+    }
+
     private async Task HandlePingAsync(JsonElement message, CancellationToken cancellationToken)
     {
         var sentAtMs = ReadInt64(message, "sentAtMs");
@@ -482,14 +519,55 @@ public sealed class WindowsSession : IDisposable
                 return;
             }
 
-            // Bound the send so a wedged socket cannot hold the send gate open
-            // forever and silently stop clipboard sync.
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-            await SendAsync(new { type = "clipboard", origin = _configuration.DeviceId, text }, timeout.Token).ConfigureAwait(false);
+            var parts = ClipboardParts.Split(text, V2Protocol.ClipboardPartBytes);
+            if (parts.Count == 1)
+            {
+                // Bound the send so a wedged socket cannot hold the send gate
+                // open forever and silently stop clipboard sync.
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await SendAsync(new { type = "clipboard", origin = _configuration.DeviceId, text }, timeout.Token).ConfigureAwait(false);
+                return;
+            }
+
+            // Large texts go as small parts, one send at a time, so pings and
+            // return requests interleave. A newer copy cancels this transfer.
+            var transfer = new CancellationTokenSource();
+            CancelSafely(Interlocked.Exchange(ref _clipboardTransfer, transfer));
+            try
+            {
+                var id = Guid.NewGuid().ToString("D");
+                for (var index = 0; index < parts.Count; index++)
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(transfer.Token);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                    await SendAsync(
+                        new { type = "clipboard_part", origin = _configuration.DeviceId, id, index, count = parts.Count, text = parts[index] },
+                        timeout.Token).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                // Clear the slot before disposing so a newer copy never
+                // cancels a disposed transfer.
+                Interlocked.CompareExchange(ref _clipboardTransfer, null, transfer);
+                transfer.Dispose();
+            }
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException or OperationCanceledException)
         {
-            _diagnostics.Add("Local clipboard update was dropped because the peer disconnected.");
+            _diagnostics.Add("Local clipboard update was not sent: the Mac disconnected or a newer copy replaced it.");
+        }
+    }
+
+    private static void CancelSafely(CancellationTokenSource? transfer)
+    {
+        try
+        {
+            transfer?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // That transfer already finished.
         }
     }
 

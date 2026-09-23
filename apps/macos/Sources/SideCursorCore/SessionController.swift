@@ -58,6 +58,9 @@ public final class SessionController: ObservableObject {
     /// waiting for Windows to acknowledge it.
     private var pendingEntry: (display: DisplayDescriptor, parkAt: CGPoint?)?
     private var lastSentLayout: LayoutUpdate?
+    /// The clipboard transfer in progress; a newer copy supersedes it.
+    private var clipboardTransferID: UUID?
+    private var clipboardAssembler = ClipboardAssembler()
     /// Windows places the pointer this many pixels inside the edge it enters.
     private static let windowsEntryInset = 8.0
     /// The hidden Mac pointer waits this far inside the edge it left through.
@@ -523,6 +526,8 @@ public final class SessionController: ObservableObject {
                     self.peer = nil
                     self.activePeerID = nil
                     self.lastSentLayout = nil
+                    self.clipboardTransferID = nil
+                    self.clipboardAssembler.reset()
                     self.stopPingTimer()
                     if self.phase != .disconnected {
                         self.recover(reason: error?.localizedDescription ?? "Peer disconnected")
@@ -699,6 +704,11 @@ public final class SessionController: ObservableObject {
                   text.lengthOfBytes(using: .utf8) <= configuration.clipboardMaximumBytes
             else { return }
             clipboard.applyRemoteText(text)
+        case let .clipboardPart(part):
+            guard configuration.clipboardEnabled, part.origin != configuration.pairingAccount else { return }
+            if let text = clipboardAssembler.add(part, maximumBytes: configuration.clipboardMaximumBytes) {
+                clipboard.applyRemoteText(text)
+            }
         case let .ping(sentAtMs):
             peer?.send(.pong(sentAtMs: sentAtMs))
         case let .pong(sentAtMs):
@@ -788,9 +798,35 @@ public final class SessionController: ObservableObject {
     private func sendLocalClipboard(_ text: String) {
         guard configuration.clipboardEnabled,
               text.lengthOfBytes(using: .utf8) <= configuration.clipboardMaximumBytes,
-              peer != nil
+              let peer
         else { return }
-        peer?.send(.clipboard(origin: configuration.pairingAccount, text: text))
+        let parts = ClipboardParts.split(text, maximumBytes: ProtocolV2.clipboardPartBytes)
+        guard parts.count > 1 else {
+            clipboardTransferID = nil
+            peer.send(.clipboard(origin: configuration.pairingAccount, text: text))
+            return
+        }
+        let id = UUID()
+        clipboardTransferID = id
+        sendClipboardPart(parts, index: 0, id: id, peer: peer)
+    }
+
+    /// Sends one part and queues the next only once it has gone out, so
+    /// pointer input keeps flowing between parts.
+    private func sendClipboardPart(_ parts: [String], index: Int, id: UUID, peer: EncryptedPeerConnection) {
+        guard index < parts.count, clipboardTransferID == id, self.peer === peer else { return }
+        let part = ClipboardPart(origin: configuration.pairingAccount, id: id, index: index, count: parts.count, text: parts[index])
+        peer.send(.clipboardPart(part)) { [weak self] result in
+            guard case .success = result else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if index + 1 == parts.count {
+                    if self.clipboardTransferID == id { self.clipboardTransferID = nil }
+                } else {
+                    self.sendClipboardPart(parts, index: index + 1, id: id, peer: peer)
+                }
+            }
+        }
     }
 
     private func recover(reason: String, isError: Bool = true) {

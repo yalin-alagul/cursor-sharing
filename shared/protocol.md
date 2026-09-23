@@ -81,6 +81,7 @@ from the wire header and never from the nonce.
 {"type":"return_ack","id":"uuid"}
 {"type":"release_all","reason":"disconnect"}
 {"type":"clipboard","origin":"peer-uuid","text":"plain text"}
+{"type":"clipboard_part","origin":"peer-uuid","id":"uuid","index":0,"count":640,"text":"first 16 KiB"}
 {"type":"ping","sentAtMs":0}
 {"type":"pong","sentAtMs":0}
 {"type":"displays","displays":[{"id":"windows-id","name":"DELL S2725QS","x":0,"y":0,"width":3840,"height":2160,"widthMm":597,"heightMm":336,"primary":true}]}
@@ -107,7 +108,13 @@ the pointer. Without `target` (older Macs), Windows uses its configured target
 display, `y`, and its left edge as before; without `displays` (older Windows),
 the Mac uses its configured source display's right edge.
 
-Maximum clipboard text is 1 MiB and maximum encrypted frame is 2 MiB.  Mouse
+Maximum clipboard text is 10 MiB and maximum encrypted frame is 2 MiB. Text
+over 16 KiB is sent as ordered `clipboard_part` messages of at most 16 KiB
+(UTF-8, split only at character boundaries), sending each part after the
+previous one has been written so input keeps flowing between parts. The
+receiver joins them once all `count` parts of an `id` arrive; a gap, a new
+`id`, or a total over the limit discards the partial text. A single
+`clipboard` message stays at or under 1 MiB.  Mouse
 motion may be coalesced; buttons, key transitions, mode transitions, and
 `release_all` are ordered and never discarded.
 

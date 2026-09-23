@@ -41,7 +41,7 @@ public partial class MainWindow : Window
             AbsolutePointerCheck.IsChecked = configuration.AbsolutePointer;
             ReturnEdgeInsetText.Text = configuration.ReturnEdgeInsetPixels.ToString(CultureInfo.InvariantCulture);
             ClipboardEnabledCheck.IsChecked = configuration.ClipboardEnabled;
-            ClipboardMaximumText.Text = configuration.ClipboardMaximumBytes.ToString(CultureInfo.InvariantCulture);
+            ShowClipboardMaximum(configuration.ClipboardMaximumBytes);
             DesktopLeftText.Text = configuration.Commands.DesktopLeft;
             DesktopRightText.Text = configuration.Commands.DesktopRight;
             TaskViewText.Text = configuration.Commands.TaskView;
@@ -247,10 +247,9 @@ public partial class MainWindow : Window
             throw new InvalidOperationException("Return-edge inset must be between 0 and 32 physical pixels.");
         }
 
-        if (!int.TryParse(ClipboardMaximumText.Text, NumberStyles.None, CultureInfo.InvariantCulture, out var clipboardMaximum) || clipboardMaximum is < 1 or > SideCursorConfig.MaximumClipboardBytes)
-        {
-            throw new InvalidOperationException("Clipboard limit must be between 1 and 1,048,576 bytes.");
-        }
+        var clipboardMaximum = (ClipboardMaximumCombo.SelectedItem as ComboBoxItem)?.Tag is int bytes
+            ? bytes
+            : SideCursorConfig.MaximumClipboardBytes;
 
         var selectedDisplay = TargetDisplayCombo.SelectedItem as DisplayDescriptor;
         if (selectedDisplay is null)
@@ -299,6 +298,29 @@ public partial class MainWindow : Window
         var isTcp = transport == TransportKind.TailscaleTcp;
         TcpSettingsPanel.Visibility = isTcp ? Visibility.Visible : Visibility.Collapsed;
         BluetoothSettingsPanel.Visibility = isTcp ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>Fills the size picker, keeping a saved value that is not a preset.</summary>
+    private void ShowClipboardMaximum(int current)
+    {
+        int[] presets = [64 * 1024, 256 * 1024, 1024 * 1024, 5 * 1024 * 1024, SideCursorConfig.MaximumClipboardBytes];
+        var sizes = presets.Contains(current) ? presets : presets.Append(current).Order().ToArray();
+        ClipboardMaximumCombo.Items.Clear();
+        foreach (var size in sizes)
+        {
+            var item = new ComboBoxItem
+            {
+                Tag = size,
+                Content = size >= 1024 * 1024
+                    ? string.Format(CultureInfo.CurrentCulture, "{0:0.#} MB", size / (1024.0 * 1024.0))
+                    : string.Format(CultureInfo.CurrentCulture, "{0:0} KB", size / 1024.0),
+            };
+            ClipboardMaximumCombo.Items.Add(item);
+            if (size == current)
+            {
+                ClipboardMaximumCombo.SelectedItem = item;
+            }
+        }
     }
 
     private string PairingStateDescription => _runtime.HasPairingSecret

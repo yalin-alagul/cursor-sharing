@@ -223,7 +223,9 @@ public final class EncryptedPeerConnection {
         )
     }
 
-    public func send(_ message: ProtocolMessage) {
+    /// `completion` runs once the frame has been handed to the transport,
+    /// which lets a large clipboard pace its parts behind pointer input.
+    public func send(_ message: ProtocolMessage, completion: ((Result<Void, Error>) -> Void)? = nil) {
         let frame: Data
         do {
             lock.lock()
@@ -234,10 +236,12 @@ public final class EncryptedPeerConnection {
             frame = try EncryptedFrameCodec.lengthPrefixed(body)
         } catch {
             finish(error)
+            completion?(.failure(error))
             return
         }
         stream.send(frame) { [weak self] result in
             if case let .failure(error) = result { self?.finish(error) }
+            completion?(result)
         }
     }
 

@@ -4,6 +4,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
+using SideCursor.Windows.Core;
 
 namespace SideCursor.Windows.Services;
 
@@ -182,7 +183,7 @@ public sealed class ClipboardSync : IDisposable
 
     private bool CanSync(string text)
     {
-        return Encoding.UTF8.GetByteCount(text) <= Math.Clamp(_maximumBytes(), 1, 1024 * 1024);
+        return Encoding.UTF8.GetByteCount(text) <= Math.Clamp(_maximumBytes(), 1, SideCursorConfig.MaximumClipboardBytes);
     }
 
     private static string Hash(string text)

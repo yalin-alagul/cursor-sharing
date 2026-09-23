@@ -361,8 +361,11 @@ struct ConnectionPage: View {
                 Toggle("Share copied text with Windows", isOn: model.binding(\.clipboardEnabled))
                     .toggleStyle(.switch)
                 Picker("Largest item", selection: model.binding(\.clipboardMaximumBytes)) {
-                    ForEach(options([64 * 1024, 256 * 1024, 512 * 1024, 1_048_576], including: configuration.clipboardMaximumBytes), id: \.self) { bytes in
-                        Text(bytes >= 1_048_576 ? "1 MB" : "\(bytes / 1024) KB").tag(bytes)
+                    ForEach(
+                        options([64 * 1024, 256 * 1024, 1_048_576, 5 * 1_048_576, 10 * 1_048_576], including: configuration.clipboardMaximumBytes),
+                        id: \.self
+                    ) { bytes in
+                        Text(bytes >= 1_048_576 ? "\(bytes / 1_048_576) MB" : "\(bytes / 1024) KB").tag(bytes)
                     }
                 }
                 .disabled(!configuration.clipboardEnabled)

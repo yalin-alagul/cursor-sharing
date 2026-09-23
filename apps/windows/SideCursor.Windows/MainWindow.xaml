@@ -360,9 +360,9 @@
               </Grid.ColumnDefinitions>
               <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
                 <TextBlock Text="Largest item" />
-                <TextBlock Style="{StaticResource Caption}" Text="In bytes, up to 1,048,576 (1 MB)." />
+                <TextBlock Style="{StaticResource Caption}" Text="Bigger copies stay on the computer they were made on. Up to 10 MB." />
               </StackPanel>
-              <TextBox x:Name="ClipboardMaximumText" Grid.Column="1" Width="120" />
+              <ComboBox x:Name="ClipboardMaximumCombo" Grid.Column="1" MinWidth="140" />
             </Grid>
           </Border>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
