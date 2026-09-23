@@ -4,6 +4,8 @@
 <dict>
   <key>CFBundleDisplayName</key>
   <string>SideCursor</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleExecutable</key>
   <string>SideCursorMac</string>
   <key>CFBundleIdentifier</key>

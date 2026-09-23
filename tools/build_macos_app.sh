@@ -13,6 +13,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$PRODUCT" "$APP_DIR/Contents/MacOS/SideCursorMac"
 cp "$PACKAGE_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "$PACKAGE_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 # A stable signing identity keeps the app's code requirement constant, so the
 # macOS Accessibility/Input Monitoring grant survives rebuilds.  Ad-hoc signing
