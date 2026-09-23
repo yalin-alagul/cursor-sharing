@@ -14,6 +14,55 @@ public sealed class ConfigurationAndInputTests
     }
 
     [Fact]
+    public void TargetResolutionPrefersTheSavedDisplay()
+    {
+        var displays = new[] { Display("DELL-A", primary: true), Display("DELL-B", primary: false) };
+
+        var target = DisplayCatalog.ResolveTarget(new SideCursorConfig { TargetDisplayId = "dell-b" }, displays);
+
+        Assert.Equal("DELL-B", target.StableId);
+    }
+
+    [Fact]
+    public void TargetResolutionFallsBackToPrimaryWhenSavedDisplayIsDisconnected()
+    {
+        // A different monitor on the dock used to reject every remote entry
+        // until the target was re-selected by hand.
+        var displays = new[] { Display("LAPTOP", primary: false), Display("DELL-B", primary: true) };
+        var configuration = new SideCursorConfig { TargetDisplayId = "DELL-A" };
+
+        var target = DisplayCatalog.ResolveTarget(configuration, displays);
+
+        Assert.Equal("DELL-B", target.StableId);
+        Assert.False(DisplayCatalog.IsConfiguredTarget(configuration, target));
+    }
+
+    [Fact]
+    public void TargetResolutionFallsBackToFirstDisplayWithoutAPrimary()
+    {
+        var displays = new[] { Display("ONE", primary: false), Display("TWO", primary: false) };
+
+        var target = DisplayCatalog.ResolveTarget(new SideCursorConfig { TargetDisplayId = "GONE" }, displays);
+
+        Assert.Equal("ONE", target.StableId);
+    }
+
+    [Fact]
+    public void TargetResolutionUsesTheOnlyDisplayWhenNoneIsSaved()
+    {
+        var target = DisplayCatalog.ResolveTarget(new SideCursorConfig(), new[] { Display("ONLY", primary: true) });
+
+        Assert.Equal("ONLY", target.StableId);
+    }
+
+    [Fact]
+    public void TargetResolutionThrowsWithoutAnyDisplay()
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => DisplayCatalog.ResolveTarget(new SideCursorConfig(), Array.Empty<DisplayDescriptor>()));
+    }
+
+    [Fact]
     public void AbsolutePointerIsOnByDefaultForUnacceleratedMotion()
     {
         Assert.True(new SideCursorConfig().AbsolutePointer);
@@ -142,4 +191,7 @@ public sealed class ConfigurationAndInputTests
         Assert.False(plan.RequestReturn);
         Assert.Null(plan.ClampCursorTo);
     }
+
+    private static DisplayDescriptor Display(string stableId, bool primary) =>
+        new(stableId, $@"\\.\{stableId}", stableId, new PixelBounds(0, 0, 1920, 1080), 96, 96, primary);
 }
