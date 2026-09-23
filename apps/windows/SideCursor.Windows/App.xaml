@@ -3,13 +3,12 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ShutdownMode="OnExplicitShutdown">
   <Application.Resources>
-    <Style TargetType="{x:Type Button}">
-      <Setter Property="Margin" Value="0,0,8,0" />
-      <Setter Property="Padding" Value="12,6" />
-    </Style>
-    <Style TargetType="{x:Type TextBox}">
-      <Setter Property="Margin" Value="0,3,0,8" />
-      <Setter Property="MinWidth" Value="220" />
-    </Style>
+    <!-- Kept in their own dictionary so they can be loaded without starting
+         the app (the window snapshot test does). -->
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceDictionary Source="pack://application:,,,/SideCursor.Windows;component/Styles.xaml" />
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
   </Application.Resources>
 </Application>

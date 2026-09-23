@@ -1,157 +1,411 @@
 <Window x:Class="SideCursor.Windows.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="SideCursor for Windows"
-        Width="800"
-        Height="650"
-        MinWidth="720"
+        Title="SideCursor"
+        Icon="pack://application:,,,/SideCursor.Windows;component/Assets/SideCursor.ico"
+        Width="980"
+        Height="700"
+        MinWidth="820"
         MinHeight="560"
+        Background="{DynamicResource WindowBackground}"
+        Foreground="{DynamicResource TextPrimary}"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
+        FontSize="14"
+        UseLayoutRounding="True"
+        SourceInitialized="OnSourceInitialized"
         Closing="OnClosing">
-  <Grid Margin="18">
-    <TabControl>
-      <TabItem Header="Status">
-        <StackPanel Margin="16">
-          <TextBlock Text="SideCursor Windows companion" FontSize="24" FontWeight="SemiBold" />
-          <TextBlock Text="Receives Mac input only after an authenticated entry acknowledgement." Margin="0,6,0,18" Foreground="DimGray" />
-          <Grid Margin="0,0,0,14">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="160" />
-              <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid.RowDefinitions>
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-              <RowDefinition Height="Auto" />
-            </Grid.RowDefinitions>
-            <TextBlock Grid.Row="0" Text="Session" FontWeight="SemiBold" />
-            <TextBlock x:Name="SessionStateText" Grid.Row="0" Grid.Column="1" Text="Disconnected" />
-            <TextBlock Grid.Row="1" Text="Transport" FontWeight="SemiBold" />
-            <TextBlock x:Name="TransportStateText" Grid.Row="1" Grid.Column="1" />
-            <TextBlock Grid.Row="2" Text="Round-trip time" FontWeight="SemiBold" />
-            <TextBlock x:Name="LatencyText" Grid.Row="2" Grid.Column="1" Text="Waiting for peer" />
-            <TextBlock Grid.Row="3" Text="Target display" FontWeight="SemiBold" />
-            <TextBlock x:Name="TargetDisplayStateText" Grid.Row="3" Grid.Column="1" Text="Not selected" TextWrapping="Wrap" />
-            <TextBlock Grid.Row="4" Text="Elevation" FontWeight="SemiBold" />
-            <TextBlock x:Name="ElevationText" Grid.Row="4" Grid.Column="1" TextWrapping="Wrap" />
-          </Grid>
-          <StackPanel Orientation="Horizontal">
-            <Button Content="Connect / Reconnect" Click="OnReconnectClick" />
-            <Button Content="Return control to Mac" Click="OnReturnClick" />
-            <Button Content="Open diagnostics" Click="OnDiagnosticsClick" />
-          </StackPanel>
-          <Border Margin="0,20,0,0" Padding="12" BorderBrush="#FFD9A441" BorderThickness="1" Background="#FFFFF9E8">
-            <TextBlock TextWrapping="Wrap">
-              SideCursor intentionally does not capture your local Windows keyboard or mouse. It only injects authenticated Mac input while the session is Remote. If Windows cannot inject into an elevated app, run SideCursor elevated too.
-            </TextBlock>
-          </Border>
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="248" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+
+    <!-- Sidebar -->
+    <DockPanel Margin="12,18,8,16">
+      <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="10,0,0,20">
+        <Image Source="pack://application:,,,/SideCursor.Windows;component/Assets/SideCursor.ico" Width="32" Height="32"
+               RenderOptions.BitmapScalingMode="HighQuality" />
+        <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+          <TextBlock Text="SideCursor" FontSize="15" FontWeight="SemiBold" />
+          <TextBlock x:Name="NavStatusText" Style="{StaticResource Caption}" Text="Starting…" />
         </StackPanel>
-      </TabItem>
-
-      <TabItem Header="Pairing &amp; transport">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel Margin="16">
-            <TextBlock Text="Connection" FontSize="20" FontWeight="SemiBold" />
-            <TextBlock Text="Tailscale TCP is the default. Bluetooth starts a local, encrypted RFCOMM listener only when selected; it never switches automatically." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,14" />
-            <TextBlock Text="Transport" />
-            <ComboBox x:Name="TransportCombo" SelectionChanged="OnTransportChanged" Margin="0,3,0,8">
-              <ComboBoxItem Tag="TailscaleTcp" Content="Tailscale TCP (recommended)" />
-              <ComboBoxItem Tag="BluetoothRfcomm" Content="Bluetooth RFCOMM (manual fallback)" />
-            </ComboBox>
-            <StackPanel x:Name="TcpSettingsPanel">
-              <TextBlock Text="Mac Tailscale address or hostname" />
-              <TextBox x:Name="PeerHostText" />
-              <TextBlock Text="Mac listener port" />
-              <TextBox x:Name="PeerPortText" />
-            </StackPanel>
-            <StackPanel x:Name="BluetoothSettingsPanel" Visibility="Collapsed">
-              <TextBlock Text="Advertised SideCursor service UUID" />
-              <TextBlock x:Name="BluetoothServiceText" FontFamily="Consolas" TextWrapping="Wrap" Margin="0,3,0,8" />
-              <TextBlock Text="Pair both computers in Windows/macOS first. Save and reconnect; this app then advertises the service and waits. The Mac resolves the current RFCOMM channel through Bluetooth SDP, so no old Python channel number is entered." TextWrapping="Wrap" Foreground="DimGray" />
-            </StackPanel>
-            <Separator Margin="0,16,0,12" />
-            <TextBlock Text="Pairing code" FontSize="20" FontWeight="SemiBold" />
-            <TextBlock Text="Paste the one-time 32-byte base64url pairing secret here. It is encrypted with Windows DPAPI and is never logged. Leave blank to preserve the existing pairing." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,8" />
-            <PasswordBox x:Name="PairingCodeBox" Margin="0,3,0,8" MinWidth="420" HorizontalAlignment="Left" Width="420" />
-            <TextBlock x:Name="PairingStateText" Text="No pairing secret saved" Foreground="DimGray" />
-            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-              <Button Content="Save settings" Click="OnSaveSettingsClick" />
-              <Button Content="Save and reconnect" Click="OnSaveAndReconnectClick" />
-            </StackPanel>
+      </StackPanel>
+      <ListBox x:Name="Navigation" Style="{StaticResource NavList}" ItemContainerStyle="{StaticResource NavItem}" SelectionChanged="OnNavigationChanged">
+        <ListBoxItem Tag="Status">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE80F;" Width="30" />
+            <TextBlock Text="Status" />
           </StackPanel>
-        </ScrollViewer>
-      </TabItem>
+        </ListBoxItem>
+        <ListBoxItem Tag="Connection">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE71B;" Width="30" />
+            <TextBlock Text="Connection" />
+          </StackPanel>
+        </ListBoxItem>
+        <ListBoxItem Tag="Displays">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE7F4;" Width="30" />
+            <TextBlock Text="Displays" />
+          </StackPanel>
+        </ListBoxItem>
+        <ListBoxItem Tag="Input">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE962;" Width="30" />
+            <TextBlock Text="Pointer &amp; shortcuts" />
+          </StackPanel>
+        </ListBoxItem>
+        <ListBoxItem Tag="Clipboard">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE77F;" Width="30" />
+            <TextBlock Text="Clipboard &amp; safety" />
+          </StackPanel>
+        </ListBoxItem>
+        <ListBoxItem Tag="Diagnostics">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Style="{StaticResource Glyph}" Text="&#xE9D9;" Width="30" />
+            <TextBlock Text="Diagnostics" />
+          </StackPanel>
+        </ListBoxItem>
+      </ListBox>
+    </DockPanel>
 
-      <TabItem Header="Displays &amp; input">
-        <ScrollViewer VerticalScrollBarVisibility="Auto">
-          <StackPanel Margin="16">
-            <TextBlock Text="Windows target display" FontSize="20" FontWeight="SemiBold" />
-            <TextBlock Text="The selected stable monitor identity receives the Mac handoff. Windows sends a return request only at this display’s left edge." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,8" />
-            <ComboBox x:Name="TargetDisplayCombo" DisplayMemberPath="Label" Margin="0,3,0,6" />
-            <Button Content="Refresh display list" Click="OnRefreshDisplaysClick" HorizontalAlignment="Left" />
-            <TextBlock Text="Pointer speed" FontSize="20" FontWeight="SemiBold" Margin="0,18,0,0" />
-            <TextBlock Text="Pointer speed is set on the Mac (SideCursor Settings → pointer scale), which owns the raw trackpad input. Windows maps Mac pointer units to this display’s pixels automatically." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,4" />
-            <CheckBox x:Name="AbsolutePointerCheck" Content="Unaccelerated 1:1 pointer movement (recommended)" Margin="0,10,0,0" />
-            <TextBlock Text="Absolute movement bypasses Windows pointer acceleration and matches Mac motion exactly. Uncheck to fall back to accelerated relative motion." TextWrapping="Wrap" Foreground="DimGray" Margin="0,2,0,0" />
-            <TextBlock Text="Return-edge inset (physical pixels)" Margin="0,14,0,0" />
-            <TextBox x:Name="ReturnEdgeInsetText" />
-            <Separator Margin="0,14,0,12" />
-            <TextBlock Text="Remote command bindings" FontSize="20" FontWeight="SemiBold" />
-            <TextBlock Text="These safe Windows chords are invoked by authenticated Mac command messages. Use plus-separated virtual-key names, for example WIN+CTRL+LEFT." TextWrapping="Wrap" Foreground="DimGray" Margin="0,6,0,8" />
+    <!-- Pages -->
+    <ScrollViewer Grid.Column="1" x:Name="PageScroller" VerticalScrollBarVisibility="Auto" Focusable="False">
+      <Grid Margin="28,22,36,28" MaxWidth="980" HorizontalAlignment="Stretch">
+
+        <!-- Status -->
+        <StackPanel x:Name="StatusPage">
+          <TextBlock Style="{StaticResource PageTitle}" Text="Status" />
+          <Border Style="{StaticResource Card}" Padding="20,18">
             <Grid>
               <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="160" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <Grid Width="46" Height="46" VerticalAlignment="Center">
+                <Ellipse x:Name="StatusBadge" Fill="#C42B1C" />
+                <TextBlock x:Name="StatusGlyph" Style="{StaticResource Glyph}" Text="&#xE711;" FontSize="20"
+                           Foreground="White" HorizontalAlignment="Center" />
+              </Grid>
+              <StackPanel Grid.Column="1" Margin="16,0" VerticalAlignment="Center">
+                <TextBlock x:Name="StatusTitleText" Text="Not connected" FontSize="20" FontWeight="SemiBold" />
+                <TextBlock x:Name="SessionStateText" Style="{StaticResource Caption}" FontSize="13" Text="Starting…" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="Reconnect" Click="OnReconnectClick" />
+                <Button x:Name="ReturnButton" Content="Return to Mac" Style="{StaticResource AccentButton}" Click="OnReturnClick" IsEnabled="False" />
+              </StackPanel>
+            </Grid>
+          </Border>
+
+          <TextBlock Style="{StaticResource SectionHeader}" Text="Connection" />
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <Grid>
+                <TextBlock Text="Connected through" />
+                <TextBlock x:Name="TransportStateText" HorizontalAlignment="Right" Foreground="{DynamicResource TextSecondary}" Text="—" />
+              </Grid>
+              <Rectangle Style="{StaticResource Divider}" />
+              <Grid>
+                <TextBlock Text="Latency" />
+                <TextBlock x:Name="LatencyText" HorizontalAlignment="Right" Foreground="{DynamicResource TextSecondary}" Text="—" />
+              </Grid>
+              <Rectangle Style="{StaticResource Divider}" />
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="Display" />
+                <TextBlock x:Name="TargetDisplayStateText" Grid.Column="1" Margin="24,0,0,0" TextAlignment="Right"
+                           TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Text="—" />
+              </Grid>
+            </StackPanel>
+          </Border>
+
+          <Border Style="{StaticResource InfoCard}" Margin="0,18,0,0">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
               </Grid.ColumnDefinitions>
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-              </Grid.RowDefinitions>
-              <TextBlock Grid.Row="0" Text="Desktop left" VerticalAlignment="Center" />
-              <TextBox x:Name="DesktopLeftText" Grid.Row="0" Grid.Column="1" />
-              <TextBlock Grid.Row="1" Text="Desktop right" VerticalAlignment="Center" />
-              <TextBox x:Name="DesktopRightText" Grid.Row="1" Grid.Column="1" />
-              <TextBlock Grid.Row="2" Text="Task View" VerticalAlignment="Center" />
-              <TextBox x:Name="TaskViewText" Grid.Row="2" Grid.Column="1" />
-              <TextBlock Grid.Row="3" Text="Show Desktop" VerticalAlignment="Center" />
-              <TextBox x:Name="ShowDesktopText" Grid.Row="3" Grid.Column="1" />
+              <TextBlock Style="{StaticResource Glyph}" Text="&#xE946;" Foreground="{DynamicResource Accent}" VerticalAlignment="Top" Margin="0,2,12,0" />
+              <StackPanel Grid.Column="1">
+                <TextBlock TextWrapping="Wrap" Text="SideCursor never reads this PC's own keyboard or mouse. It only moves and types for the Mac while you control Windows." />
+                <TextBlock x:Name="ElevationText" Style="{StaticResource Caption}" Margin="0,4,0,0" />
+              </StackPanel>
             </Grid>
-            <Button Content="Save input settings" Click="OnSaveSettingsClick" HorizontalAlignment="Left" />
-          </StackPanel>
-        </ScrollViewer>
-      </TabItem>
-
-      <TabItem Header="Clipboard &amp; safety">
-        <StackPanel Margin="16">
-          <TextBlock Text="Clipboard" FontSize="20" FontWeight="SemiBold" />
-          <CheckBox x:Name="ClipboardEnabledCheck" Content="Synchronize plain-text clipboard in both directions" Margin="0,10,0,8" />
-          <TextBlock Text="Maximum text size in bytes (1–1,048,576)" />
-          <TextBox x:Name="ClipboardMaximumText" />
-          <TextBlock Text="Remote clipboard updates are tagged locally to prevent echo loops. Files, images, and rich clipboard formats are intentionally not transferred." TextWrapping="Wrap" Foreground="DimGray" />
-          <Separator Margin="0,24,0,14" />
-          <TextBlock Text="Safety" FontSize="20" FontWeight="SemiBold" />
-          <TextBlock Text="Connection loss, invalid encrypted frames, target-display removal, and Return control release tracked Windows keys and mouse buttons before the session reconnects. A forced process termination cannot release input, so use Return control (or the tray menu) before killing SideCursor." TextWrapping="Wrap" />
-          <Button Content="Release all injected input now" Click="OnReleaseInputClick" Margin="0,14,0,0" HorizontalAlignment="Left" />
-          <Button Content="Save clipboard settings" Click="OnSaveSettingsClick" HorizontalAlignment="Left" />
+          </Border>
         </StackPanel>
-      </TabItem>
 
-      <TabItem Header="Diagnostics">
-        <Grid Margin="16">
+        <!-- Connection -->
+        <StackPanel x:Name="ConnectionPage" Visibility="Collapsed">
+          <TextBlock Style="{StaticResource PageTitle}" Text="Connection" />
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="Connect using" />
+                <TextBlock Style="{StaticResource Caption}" Text="Tailscale is recommended. Bluetooth is never chosen automatically." />
+              </StackPanel>
+              <ComboBox x:Name="TransportCombo" Grid.Column="1" SelectionChanged="OnTransportChanged">
+                <ComboBoxItem Tag="TailscaleTcp" Content="Tailscale" />
+                <ComboBoxItem Tag="BluetoothRfcomm" Content="Bluetooth" />
+              </ComboBox>
+            </Grid>
+          </Border>
+
+          <StackPanel x:Name="TcpSettingsPanel">
+            <Border Style="{StaticResource Card}">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                  <TextBlock Text="Mac address" />
+                  <TextBlock Style="{StaticResource Caption}" Text="The Mac's Tailscale address or name." />
+                </StackPanel>
+                <TextBox x:Name="PeerHostText" Grid.Column="1" Width="240" />
+              </Grid>
+            </Border>
+            <Border Style="{StaticResource Card}">
+              <Grid>
+                <TextBlock Text="Port" VerticalAlignment="Center" />
+                <TextBox x:Name="PeerPortText" Width="100" HorizontalAlignment="Right" />
+              </Grid>
+            </Border>
+          </StackPanel>
+
+          <StackPanel x:Name="BluetoothSettingsPanel" Visibility="Collapsed">
+            <Border Style="{StaticResource Card}">
+              <StackPanel>
+                <TextBlock TextWrapping="Wrap" Text="Pair this PC with the Mac in Bluetooth settings first. SideCursor then waits here for the Mac to connect." />
+                <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0">
+                  <Run Text="Service ID " /><Run x:Name="BluetoothServiceRun" FontFamily="Consolas" />
+                </TextBlock>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <TextBlock Style="{StaticResource SectionHeader}" Text="Pairing" />
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Pairing code" />
+                <TextBlock x:Name="PairingStateText" Style="{StaticResource Caption}" Text="No pairing code saved yet." />
+              </StackPanel>
+              <PasswordBox x:Name="PairingCodeBox" Grid.Column="1" Width="320" ToolTip="Paste the code from the Mac. Leave empty to keep the saved code." />
+            </Grid>
+          </Border>
+
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Save" Click="OnSaveSettingsClick" />
+            <Button Content="Save and reconnect" Style="{StaticResource AccentButton}" Click="OnSaveAndReconnectClick" />
+          </StackPanel>
+        </StackPanel>
+
+        <!-- Displays -->
+        <StackPanel x:Name="DisplaysPage" Visibility="Collapsed">
+          <TextBlock Style="{StaticResource PageTitle}" Text="Displays" />
+          <Border Style="{StaticResource InfoCard}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Style="{StaticResource Glyph}" Text="&#xE946;" Foreground="{DynamicResource Accent}" VerticalAlignment="Top" Margin="0,2,12,0" />
+              <TextBlock Grid.Column="1" TextWrapping="Wrap"
+                         Text="Arrange these displays on the Mac, in SideCursor Settings → Displays. The Mac decides where the pointer crosses, at the same physical spot on both sides." />
+            </Grid>
+          </Border>
+
+          <TextBlock Style="{StaticResource SectionHeader}" Text="This PC's displays" />
+          <ItemsControl x:Name="DisplayList">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Style="{StaticResource Card}">
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Style="{StaticResource Glyph}" Text="&#xE7F4;" FontSize="20" Margin="0,0,14,0" />
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                      <TextBlock Text="{Binding Name}" />
+                      <TextBlock Style="{StaticResource Caption}" Text="{Binding Detail}" />
+                    </StackPanel>
+                    <Border Grid.Column="2" CornerRadius="10" Padding="10,2" VerticalAlignment="Center"
+                            Background="{DynamicResource NavSelected}" Visibility="{Binding PrimaryVisibility}">
+                      <TextBlock Text="Main display" FontSize="12" />
+                    </Border>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+
+          <TextBlock Style="{StaticResource SectionHeader}" Text="Without a Mac layout" />
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Fallback display" />
+                <TextBlock Style="{StaticResource Caption}" Text="Only used with an older Mac app that doesn't send a layout." />
+              </StackPanel>
+              <ComboBox x:Name="TargetDisplayCombo" Grid.Column="1" DisplayMemberPath="Label" Width="300" />
+              <Button Grid.Column="2" Content="Refresh" Click="OnRefreshDisplaysClick" />
+            </Grid>
+          </Border>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Save" Style="{StaticResource AccentButton}" Click="OnSaveSettingsClick" />
+          </StackPanel>
+        </StackPanel>
+
+        <!-- Pointer & shortcuts -->
+        <StackPanel x:Name="InputPage" Visibility="Collapsed">
+          <TextBlock Style="{StaticResource PageTitle}" Text="Pointer &amp; shortcuts" />
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Exact pointer movement" />
+                <TextBlock Style="{StaticResource Caption}" Text="Bypasses Windows pointer acceleration so movement matches the Mac. Pointer speed is set on the Mac." />
+              </StackPanel>
+              <CheckBox x:Name="AbsolutePointerCheck" Grid.Column="1" VerticalAlignment="Center" />
+            </Grid>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Return edge gap" />
+                <TextBlock Style="{StaticResource Caption}" Text="Pixels the pointer stays away from the edge when returning without a Mac layout (0–32)." />
+              </StackPanel>
+              <TextBox x:Name="ReturnEdgeInsetText" Grid.Column="1" Width="80" />
+            </Grid>
+          </Border>
+
+          <TextBlock Style="{StaticResource SectionHeader}" Text="Shortcuts for Mac gestures" />
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <Grid>
+                <TextBlock Text="Previous desktop" VerticalAlignment="Center" />
+                <TextBox x:Name="DesktopLeftText" Width="220" HorizontalAlignment="Right" FontFamily="Consolas" />
+              </Grid>
+              <Rectangle Style="{StaticResource Divider}" />
+              <Grid>
+                <TextBlock Text="Next desktop" VerticalAlignment="Center" />
+                <TextBox x:Name="DesktopRightText" Width="220" HorizontalAlignment="Right" FontFamily="Consolas" />
+              </Grid>
+              <Rectangle Style="{StaticResource Divider}" />
+              <Grid>
+                <TextBlock Text="Task View" VerticalAlignment="Center" />
+                <TextBox x:Name="TaskViewText" Width="220" HorizontalAlignment="Right" FontFamily="Consolas" />
+              </Grid>
+              <Rectangle Style="{StaticResource Divider}" />
+              <Grid>
+                <TextBlock Text="Show desktop" VerticalAlignment="Center" />
+                <TextBox x:Name="ShowDesktopText" Width="220" HorizontalAlignment="Right" FontFamily="Consolas" />
+              </Grid>
+            </StackPanel>
+          </Border>
+          <TextBlock Style="{StaticResource Caption}" Margin="2,6,0,0" Text="Key names joined with +, for example WIN+CTRL+LEFT." />
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
+            <Button Content="Save" Style="{StaticResource AccentButton}" Click="OnSaveSettingsClick" />
+          </StackPanel>
+        </StackPanel>
+
+        <!-- Clipboard & safety -->
+        <StackPanel x:Name="ClipboardPage" Visibility="Collapsed">
+          <TextBlock Style="{StaticResource PageTitle}" Text="Clipboard &amp; safety" />
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Share clipboard text" />
+                <TextBlock Style="{StaticResource Caption}" Text="Copied text moves between the Mac and this PC. Files and images stay put." />
+              </StackPanel>
+              <CheckBox x:Name="ClipboardEnabledCheck" Grid.Column="1" VerticalAlignment="Center" />
+            </Grid>
+          </Border>
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Largest item" />
+                <TextBlock Style="{StaticResource Caption}" Text="In bytes, up to 1,048,576 (1 MB)." />
+              </StackPanel>
+              <TextBox x:Name="ClipboardMaximumText" Grid.Column="1" Width="120" />
+            </Grid>
+          </Border>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Save" Style="{StaticResource AccentButton}" Click="OnSaveSettingsClick" />
+          </StackPanel>
+
+          <TextBlock Style="{StaticResource SectionHeader}" Text="Safety" />
+          <Border Style="{StaticResource Card}">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                <TextBlock Text="Release all keys and buttons" />
+                <TextBlock Style="{StaticResource Caption}" Text="Use this if a key or mouse button seems stuck. Disconnects and returns to the Mac already do it automatically." />
+              </StackPanel>
+              <Button Grid.Column="1" Content="Release now" Click="OnReleaseInputClick" />
+            </Grid>
+          </Border>
+        </StackPanel>
+
+        <!-- Diagnostics -->
+        <Grid x:Name="DiagnosticsPage" Visibility="Collapsed">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
           </Grid.RowDefinitions>
-          <StackPanel Orientation="Horizontal">
-            <Button Content="Refresh" Click="OnRefreshDiagnosticsClick" />
-            <Button Content="Copy diagnostics" Click="OnCopyDiagnosticsClick" />
-          </StackPanel>
-          <TextBox x:Name="DiagnosticsText" Grid.Row="1" Margin="0,8,0,0" FontFamily="Consolas" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
+          <DockPanel>
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,6,0,0">
+              <Button Content="Refresh" Click="OnRefreshDiagnosticsClick" />
+              <Button Content="Copy" Click="OnCopyDiagnosticsClick" />
+            </StackPanel>
+            <TextBlock Style="{StaticResource PageTitle}" Text="Diagnostics" />
+          </DockPanel>
+          <Border Grid.Row="1" Style="{StaticResource Card}" Padding="4">
+            <TextBox x:Name="DiagnosticsText" Height="480" FontFamily="Consolas" FontSize="12" IsReadOnly="True"
+                     BorderThickness="0" Background="Transparent" BorderBrush="Transparent"
+                     TextWrapping="Wrap" VerticalContentAlignment="Top"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" />
+          </Border>
         </Grid>
-      </TabItem>
-    </TabControl>
+      </Grid>
+    </ScrollViewer>
   </Grid>
 </Window>
