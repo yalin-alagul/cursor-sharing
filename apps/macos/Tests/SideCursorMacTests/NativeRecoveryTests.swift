@@ -118,6 +118,25 @@ final class NativeRecoveryTests: XCTestCase {
         XCTAssertFalse(guardState.shouldForwardLocalText("new local text"))
     }
 
+    func testThreeFingerSwipeMapsToWindowsCommands() {
+        let hotkeys = RemoteHotkeys()
+        func command(_ dx: Double, _ dy: Double) -> String? {
+            MacVirtualKeyMapper.remoteGestureCommand(fingerDx: dx, fingerDy: dy, minimum: 6, hotkeys: hotkeys)
+        }
+        XCTAssertEqual(command(1, -28), "task_view")
+        XCTAssertEqual(command(0, 40), "show_desktop")
+        // Horizontal stays inverted: swiping left shows the desktop on the right.
+        XCTAssertEqual(command(-28, 3), "desktop_right")
+        XCTAssertEqual(command(65, 4), "desktop_left")
+        XCTAssertNil(command(2, -4), "a small movement is not a swipe")
+    }
+
+    func testThreeFingerSwipeRespectsDisabledCommands() {
+        let hotkeys = RemoteHotkeys(taskViewEnabled: false, showDesktopEnabled: false)
+        XCTAssertNil(MacVirtualKeyMapper.remoteGestureCommand(fingerDx: 0, fingerDy: -30, minimum: 6, hotkeys: hotkeys))
+        XCTAssertNil(MacVirtualKeyMapper.remoteGestureCommand(fingerDx: 0, fingerDy: 30, minimum: 6, hotkeys: hotkeys))
+    }
+
     func testZoomInputEventMatchesSharedProtocolShape() throws {
         let encoded = try JSONEncoder().encode(NativeInputEvent.zoom(steps: -2))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
