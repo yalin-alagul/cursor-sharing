@@ -16,6 +16,9 @@ public final class SessionController: ObservableObject {
     @Published public private(set) var gestureProfileStatus: GestureProfileStatus = .notApplied
     @Published public private(set) var handoffDebug: String?
     @Published public private(set) var inputMetricsText = "—"
+    /// The physical Mac + Windows layout, once Windows has reported its
+    /// displays. While it exists it replaces the legacy right-edge route.
+    @Published public private(set) var layout: ResolvedDisplayLayout?
     @Published public var configuration: SideCursorConfiguration {
         didSet {
             configurationStore.save(configuration)
@@ -51,6 +54,14 @@ public final class SessionController: ObservableObject {
     }
     private var machine = SessionMachine()
     private var currentRoute: EdgeRoute?
+    /// The Mac display and hidden-pointer park point for an entry that is
+    /// waiting for Windows to acknowledge it.
+    private var pendingEntry: (display: DisplayDescriptor, parkAt: CGPoint?)?
+    private var lastSentLayout: LayoutUpdate?
+    /// Windows places the pointer this many pixels inside the edge it enters.
+    private static let windowsEntryInset = 8.0
+    /// The hidden Mac pointer waits this far inside the edge it left through.
+    private static let macParkInset = 24.0
     private var listener: TCPListener?
     private var peer: EncryptedPeerConnection?
     private var activePeerID: UUID?
@@ -414,9 +425,12 @@ public final class SessionController: ObservableObject {
     /// mandatory recovery condition, never an opportunity to guess a new edge.
     public func handleDisplayConfigurationChanged() {
         let previousDisplayID = currentRoute?.display.stableID
+        let previousZones = layout?.entryZones
         refreshRoute()
-        if phase == .entering || phase == .remote || phase == .returning,
-           currentRoute?.display.stableID != previousDisplayID {
+        let changed = layout == nil
+            ? currentRoute?.display.stableID != previousDisplayID
+            : layout?.entryZones != previousZones
+        if phase == .entering || phase == .remote || phase == .returning, changed {
             recover(reason: "The configured Mac display changed")
         }
     }
@@ -485,6 +499,8 @@ public final class SessionController: ObservableObject {
                                 ? "Paired Windows companion is ready."
                                 : "Paired Windows companion is ready; grant Accessibility to enable input sharing."
                             self.updateHandoffRouteDebug()
+                            self.lastSentLayout = nil
+                            self.sendLayoutIfChanged()
                             self.lastPongAt = Date()
                             self.startPingTimer()
                         } catch {
@@ -506,6 +522,7 @@ public final class SessionController: ObservableObject {
                     guard let self, self.activePeerID == identifier else { return }
                     self.peer = nil
                     self.activePeerID = nil
+                    self.lastSentLayout = nil
                     self.stopPingTimer()
                     if self.phase != .disconnected {
                         self.recover(reason: error?.localizedDescription ?? "Peer disconnected")
@@ -516,7 +533,44 @@ public final class SessionController: ObservableObject {
     }
 
     private func requestEntry(y: Double) {
-        guard phase == .ready, let peer, let route = currentRoute else { return }
+        guard phase == .ready, let route = currentRoute else { return }
+        let source = InputSource(
+            display: route.display.stableID,
+            width: max(1, Int(route.display.bounds.width.rounded())),
+            height: max(1, Int(route.display.bounds.height.rounded()))
+        )
+        beginEntry(y: y, source: source, target: nil, display: route.display, parkAt: nil)
+    }
+
+    /// Entry through a physical-layout handoff stretch: Windows receives the
+    /// exact pixel that sits physically next to the Mac pointer.
+    private func requestEntry(zone: EntryZone, point: CGPoint) {
+        guard phase == .ready,
+              let link = layout?.link(macDisplayID: zone.macDisplayID, edge: zone.edge, at: point),
+              let display = DisplayCatalog.activeDisplays().first(where: { $0.stableID == link.mac.id })
+        else { return }
+        let entry = link.windowsEntryPoint(forMac: point, inset: Self.windowsEntryInset)
+        let along = zone.edge.runsAlongY ? point.y : point.x
+        let span = zone.edge.runsAlongY ? link.mac.bounds.height : link.mac.bounds.width
+        let origin = zone.edge.runsAlongY ? link.mac.bounds.minY : link.mac.bounds.minX
+        let source = InputSource(
+            display: link.mac.id,
+            width: max(1, Int(link.mac.bounds.width.rounded())),
+            height: max(1, Int(link.mac.bounds.height.rounded())),
+            widthMm: link.mac.sizeMm.width,
+            heightMm: link.mac.sizeMm.height
+        )
+        beginEntry(
+            y: span > 0 ? (along - origin) / span : 0.5,
+            source: source,
+            target: EnterTarget(display: link.windows.id, x: Int(entry.x.rounded()), y: Int(entry.y.rounded())),
+            display: display,
+            parkAt: link.macPoint(along: along, inset: Self.macParkInset)
+        )
+    }
+
+    private func beginEntry(y: Double, source: InputSource, target: EnterTarget?, display: DisplayDescriptor, parkAt: CGPoint?) {
+        guard phase == .ready, let peer else { return }
         // Never suppress input non-exclusively: if macOS handed us a
         // listen-only tap (Input Monitoring not granted), entering Remote would
         // forward to Windows while the Mac keyboard also stays live. Refuse the
@@ -533,12 +587,8 @@ public final class SessionController: ObservableObject {
             synchronizeGate()
             let identifier = UUID()
             pendingEnterID = identifier
-            let source = InputSource(
-                display: route.display.stableID,
-                width: max(1, Int(route.display.bounds.width.rounded())),
-                height: max(1, Int(route.display.bounds.height.rounded()))
-            )
-            peer.send(.enterRequest(EnterRequest(id: identifier, y: y, source: source)))
+            pendingEntry = (display, parkAt)
+            peer.send(.enterRequest(EnterRequest(id: identifier, y: y, source: source, target: target)))
             entryTimeout?.invalidate()
             entryTimeout = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
                 guard let self else { return }
@@ -556,11 +606,12 @@ public final class SessionController: ObservableObject {
     private func handleMessage(_ message: ProtocolMessage) {
         switch message {
         case let .enterAck(id):
-            guard phase == .entering, id == pendingEnterID, let route = currentRoute else { return }
+            guard phase == .entering, id == pendingEnterID, let entry = pendingEntry else { return }
             entryTimeout?.invalidate()
             entryTimeout = nil
+            pendingEntry = nil
             do {
-                try cursorController.capture(on: route.display)
+                try cursorController.capture(on: entry.display, parkAt: entry.parkAt)
                 try machine.transition(.cursorCaptured)
                 phase = machine.phase
                 pendingEnterID = nil
@@ -576,14 +627,25 @@ public final class SessionController: ObservableObject {
             entryTimeout = nil
             pendingEnterID = nil
             recover(reason: "Windows rejected remote entry: \(reason)")
-        case let .returnRequest(id, y):
+        case let .returnRequest(id, y, mac):
             guard phase == .remote else { return }
             do {
                 let t0 = Date()
                 try machine.transition(.requestReturn)
                 phase = machine.phase
                 synchronizeGate()
-                try cursorController.release(returnY: y, inset: configuration.returnInset)
+                // Reappear where the pointer physically left Windows, just
+                // inside the Mac edge so it cannot immediately re-enter.
+                var moveTo: CGPoint?
+                if let mac, let display = DisplayCatalog.activeDisplays().first(where: { $0.stableID == mac.display }) {
+                    moveTo = HandoffLink.inset(
+                        point: mac.edge.runsAlongY ? mac.y : mac.x,
+                        from: mac.edge,
+                        of: display.cgBounds,
+                        by: configuration.returnInset
+                    )
+                }
+                try cursorController.release(returnY: y, inset: configuration.returnInset, moveTo: moveTo)
                 let t1 = Date()
                 // The return inset already parks the pointer a few pixels
                 // inside the source display, and the release warp moves left,
@@ -652,6 +714,15 @@ public final class SessionController: ObservableObject {
             // Echo the request id so the peer can correlate the rejection, per
             // shared/protocol.md.
             peer?.send(.enterReject(id: request.id, reason: "Mac is source-only"))
+        case let .displays(displays):
+            if displays != configuration.layout.knownWindowsDisplays {
+                // Saving re-resolves the layout and sends Windows its zones.
+                configuration.layout.knownWindowsDisplays = displays
+            } else {
+                sendLayoutIfChanged()
+            }
+        case .layout:
+            lastError = "Ignored an unexpected layout message from Windows"
         }
     }
 
@@ -660,6 +731,9 @@ public final class SessionController: ObservableObject {
         case let .edgeCrossed(y):
             handoffDebug = String(format: "edge crossed at y=%.2f", y)
             requestEntry(y: y)
+        case let .zoneCrossed(zone, point):
+            handoffDebug = String(format: "%@ edge crossed at (%.0f, %.0f)", zone.edge.rawValue, point.x, point.y)
+            requestEntry(zone: zone, point: point)
         case let .input(event):
             guard phase == .remote else { return }
             peer?.send(.input(scale(event)))
@@ -683,6 +757,14 @@ public final class SessionController: ObservableObject {
     /// Records the resolved handoff route so the Diagnostics tab can show what
     /// the pointer is actually compared against.
     private func updateHandoffRouteDebug() {
+        if let layout {
+            handoffDebug = layout.links.isEmpty
+                ? "layout has no shared edge; arrange the displays in Display Layout"
+                : layout.links.map {
+                    String(format: "%@ %@ [%.0f, %.0f] → %@", $0.mac.name, $0.macEdge.rawValue, $0.macStart, $0.macEnd, $0.windows.name)
+                }.joined(separator: "; ")
+            return
+        }
         guard let route = currentRoute else {
             handoffDebug = "no active handoff route"
             return
@@ -715,6 +797,7 @@ public final class SessionController: ObservableObject {
         entryTimeout?.invalidate()
         entryTimeout = nil
         pendingEnterID = nil
+        pendingEntry = nil
         if phase != .recovering && phase != .disconnected {
             try? machine.transition(.recover)
             phase = machine.phase
@@ -777,7 +860,11 @@ public final class SessionController: ObservableObject {
     private func synchronizeGate() {
         inputGate.update(
             phase: phase,
-            route: currentRoute,
+            // A known layout owns handoff entirely, even when it has no
+            // shared edge; the legacy right edge only serves older Windows
+            // companions that never report their displays.
+            route: layout == nil ? currentRoute : nil,
+            entryZones: layout?.entryZones ?? [],
             hotkeys: configuration.remoteHotkeys,
             scrollScale: configuration.scrollScale
         )
@@ -799,7 +886,22 @@ public final class SessionController: ObservableObject {
             return
         }
         currentRoute = DisplayCatalog.route(configuration: configuration, displays: currentDisplays)
+        layout = DisplayLayoutBuilder.resolve(configuration: configuration, macDisplays: currentDisplays)
         synchronizeGate()
+        sendLayoutIfChanged()
+        if phase == .ready { updateHandoffRouteDebug() }
+    }
+
+    /// Windows needs the return stretches and corrected display sizes.
+    private func sendLayoutIfChanged() {
+        guard let peer, let update = layout?.layoutUpdate, update != lastSentLayout else { return }
+        switch phase {
+        case .disconnected, .connecting:
+            return
+        case .ready, .entering, .remote, .returning, .recovering:
+            lastSentLayout = update
+            peer.send(.layout(update))
+        }
     }
 
     private func loadPairingSecret() -> Data? {

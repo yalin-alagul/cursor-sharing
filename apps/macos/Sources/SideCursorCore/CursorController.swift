@@ -61,6 +61,8 @@ public protocol CursorPlatform: AnyObject {
     func hideCursor(on display: DisplayDescriptor)
     func unhideCursor()
     func warpMouse(to point: CGPoint) -> CGError
+    /// Moves the pointer without suppressing local mouse input afterwards.
+    func postPointerMove(to point: CGPoint)
 }
 
 public final class ProductionCursorPlatform: CursorPlatform {
@@ -127,11 +129,31 @@ public final class ProductionCursorPlatform: CursorPlatform {
     public func warpMouse(to point: CGPoint) -> CGError {
         CGWarpMouseCursorPosition(point)
     }
+
+    /// A warp makes the WindowServer ignore local mouse movement for a
+    /// moment, which froze the pointer when it was used on return. A
+    /// mouse-moved event posted from a source whose local-event suppression
+    /// interval is zero moves the pointer without that pause. The event is
+    /// tagged so SideCursor's own tap lets it through untouched.
+    public func postPointerMove(to point: CGPoint) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        source?.localEventsSuppressionInterval = 0
+        guard let event = CGEvent(
+            mouseEventSource: source,
+            mouseType: .mouseMoved,
+            mouseCursorPosition: point,
+            mouseButton: .left
+        ) else { return }
+        event.setIntegerValueField(.eventSourceUserData, value: CursorController.syntheticMoveTag)
+        event.post(tap: .cghidEventTap)
+    }
 }
 
 /// Owns exactly one global cursor hide while a remote session is active.
 /// It intentionally never calls CGCaptureDisplay or CGCaptureAllDisplays.
 public final class CursorController {
+    /// Marks pointer moves SideCursor posts itself ("SCmv").
+    public static let syntheticMoveTag: Int64 = 0x5343_6D76
     private let platform: CursorPlatform
     private var capturedDisplay: DisplayDescriptor?
     private var didHideCursor = false
@@ -142,7 +164,9 @@ public final class CursorController {
 
     public var isCaptured: Bool { capturedDisplay != nil }
 
-    public func capture(on display: DisplayDescriptor) throws {
+    /// `parkAt` is where the hidden pointer waits while Windows owns input,
+    /// normally just inside the edge the pointer left through.
+    public func capture(on display: DisplayDescriptor, parkAt: CGPoint? = nil) throws {
         guard capturedDisplay == nil else { return }
         platform.rememberFrontmostApplication()
         let association = platform.disassociateMouse()
@@ -159,12 +183,17 @@ public final class CursorController {
         // came back.  Doing the positioning warp during capture — seconds before
         // the user controls this Mac again — keeps that window off the return
         // path entirely, so returning never freezes the pointer.
-        let inset = max(4, min(24, display.bounds.width / 2))
-        let currentY = CGEvent(source: nil)?.location.y ?? (display.bounds.y + display.bounds.height / 2)
-        let point = CGPoint(
-            x: display.bounds.maxX - inset,
-            y: min(max(display.bounds.y + 1, currentY), display.bounds.maxY - 1)
-        )
+        let point: CGPoint
+        if let parkAt {
+            point = parkAt
+        } else {
+            let inset = max(4, min(24, display.bounds.width / 2))
+            let currentY = CGEvent(source: nil)?.location.y ?? (display.bounds.y + display.bounds.height / 2)
+            point = CGPoint(
+                x: display.bounds.maxX - inset,
+                y: min(max(display.bounds.y + 1, currentY), display.bounds.maxY - 1)
+            )
+        }
         _ = platform.warpMouse(to: point)
 
         platform.hideCursor(on: display)
@@ -176,11 +205,16 @@ public final class CursorController {
     /// edge because it was positioned and frozen (mouse disassociated) during
     /// capture, so no warp happens here; a warp at this moment would reintroduce
     /// the WindowServer suppression window and freeze the pointer on return.
-    public func release(returnY: Double, inset: Double = 24) throws {
+    /// `moveTo` places the pointer where it physically came back from Windows,
+    /// using a posted move that does not suppress local input.
+    public func release(returnY: Double, inset: Double = 24, moveTo: CGPoint? = nil) throws {
         guard capturedDisplay != nil else { return }
         _ = returnY
         _ = inset
         let association = platform.associateMouse()
+        if let moveTo {
+            platform.postPointerMove(to: moveTo)
+        }
         if didHideCursor {
             platform.unhideCursor()
             didHideCursor = false

@@ -12,7 +12,7 @@ public sealed class InputInjectionException : Exception
     }
 }
 
-public sealed record PointerInjectionResult(bool ReturnRequested, double ReturnY)
+public sealed record PointerInjectionResult(bool ReturnRequested, double ReturnY, MacReturnPoint? MacPoint = null)
 {
     public static PointerInjectionResult Continue { get; } = new(false, 0);
 }
@@ -45,8 +45,38 @@ public sealed class WindowsInputInjector
     private int _virtualHeight = 1;
     private int _cursorX;
     private int _cursorY;
+    // Physical layout from the Mac. In layout mode the pointer moves across
+    // every Windows display and returns only through the Mac's return zones.
+    private LayoutUpdate _layout = LayoutUpdate.Empty;
+    private IReadOnlyList<DisplayDescriptor> _desktop = [];
+    private bool _layoutMode;
+    private double _sourceUnitsPerMmX;
+    private double _sourceUnitsPerMmY;
+    private string? _scaledDisplayId;
 
-    public DisplayDescriptor EnterRemote(SideCursorConfig configuration, string sourceDisplayId, int sourceWidth, int sourceHeight, double normalizedY)
+    public void ConfigureLayout(LayoutUpdate layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        lock (_gate)
+        {
+            _layout = layout;
+            _scaledDisplayId = null;
+        }
+    }
+
+    /// <param name="targetDisplayId">From the Mac's layout: the display and
+    /// pixel the pointer physically enters at. Without it the configured
+    /// target display and <paramref name="normalizedY"/> are used.</param>
+    public DisplayDescriptor EnterRemote(
+        SideCursorConfig configuration,
+        string sourceDisplayId,
+        int sourceWidth,
+        int sourceHeight,
+        double normalizedY,
+        string? targetDisplayId = null,
+        PixelPoint? targetPoint = null,
+        double sourceWidthMm = 0,
+        double sourceHeightMm = 0)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         if (string.IsNullOrWhiteSpace(sourceDisplayId))
@@ -56,18 +86,43 @@ public sealed class WindowsInputInjector
 
         lock (_gate)
         {
-            var target = DisplayCatalog.ResolveTarget(configuration);
+            var displays = DisplayCatalog.GetDisplays();
+            DisplayDescriptor target;
+            PixelPoint entry;
+            if (targetDisplayId is not null && targetPoint is { } point)
+            {
+                target = displays.FirstOrDefault(display => string.Equals(display.StableId, targetDisplayId, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException("The Windows display in the Mac's layout is not connected. Reconnect it or rearrange the displays in the Mac's Display Layout settings.");
+                entry = DesktopPointerPlanner.Clamp(point, target.Bounds);
+                _layoutMode = true;
+            }
+            else
+            {
+                target = DisplayCatalog.ResolveTarget(configuration, displays);
+                // Only a small inset keeps the pointer a hair off the return edge.
+                // Handoff is meant to be instant both ways, so do not push the entry
+                // point far inside the display.
+                var entryInset = Math.Max(2, configuration.ReturnEdgeInsetPixels + 6);
+                entry = target.Bounds.EntryPoint(normalizedY, insetPixels: entryInset);
+                _layoutMode = false;
+            }
+
+            _desktop = displays;
             // macOS owns the user-facing pointer-speed control (`pointerScale`).
-            // Windows applies only the source-to-target resolution ratio; the
-            // legacy PointerCalibration setting is retained for configuration
+            // Windows applies only the source-to-target scale: physical when
+            // both sizes are known, otherwise the resolution ratio. The legacy
+            // PointerCalibration setting is retained for configuration
             // compatibility but must not multiply on top, which double-scaled
             // pointer motion when both controls were raised.
             _motionMapper.Configure(sourceWidth, sourceHeight, target.Bounds, calibration: 1.0);
-            // Only a small inset keeps the pointer a hair off the return edge.
-            // Handoff is meant to be instant both ways, so do not push the entry
-            // point far inside the display.
-            var entryInset = Math.Max(2, configuration.ReturnEdgeInsetPixels + 6);
-            var entry = target.Bounds.EntryPoint(normalizedY, insetPixels: entryInset);
+            _sourceUnitsPerMmX = sourceWidthMm >= 20 ? sourceWidth / sourceWidthMm : 0;
+            _sourceUnitsPerMmY = sourceHeightMm >= 20 ? sourceHeight / sourceHeightMm : 0;
+            _scaledDisplayId = null;
+            if (_layoutMode)
+            {
+                ApplyPhysicalScale(target);
+            }
+
             SetCursorPosOrThrow(entry.X, entry.Y, "Unable to position the Windows pointer at the target display edge");
 
             _useAbsolutePointer = configuration.AbsolutePointer && CacheVirtualScreen(target);
@@ -85,6 +140,11 @@ public sealed class WindowsInputInjector
         {
             var target = RequireTarget();
             EnsureTargetStillPresent(target);
+            if (_layoutMode)
+            {
+                return InjectLayoutPointer(sourceDx, sourceDy);
+            }
+
             var relative = _motionMapper.Translate(sourceDx, sourceDy);
             // In absolute mode the injected position is tracked locally, so the
             // return-edge plan is computed from an exact position instead of a
@@ -118,6 +178,63 @@ public sealed class WindowsInputInjector
             }
 
             return PointerInjectionResult.Continue;
+        }
+    }
+
+    private PointerInjectionResult InjectLayoutPointer(double sourceDx, double sourceDy)
+    {
+        var current = _useAbsolutePointer ? new PixelPoint(_cursorX, _cursorY) : ReadCursorPosition();
+        var display = DesktopPointerPlanner.DisplayAt(current, _desktop);
+        if (display is not null && !string.Equals(display.StableId, _scaledDisplayId, StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyPhysicalScale(display);
+        }
+
+        var relative = _motionMapper.Translate(sourceDx, sourceDy);
+        var plan = DesktopPointerPlanner.Plan(current, relative, _desktop, _layout.Zones);
+        if (plan.Zone is not null && plan.MoveTo is { } exit)
+        {
+            SetCursorPosOrThrow(exit.X, exit.Y, "Unable to keep the Windows pointer at the return edge");
+            TrackCursor(exit);
+            if (_returnRequested)
+            {
+                return PointerInjectionResult.Continue;
+            }
+
+            _returnRequested = true;
+            var bounds = (DesktopPointerPlanner.DisplayAt(exit, _desktop) ?? display ?? RequireTarget()).Bounds;
+            return new PointerInjectionResult(true, bounds.NormalizeY(exit.Y), plan.MacPoint);
+        }
+
+        if (plan.MoveTo is { } next && next != current)
+        {
+            if (_useAbsolutePointer)
+            {
+                SendAbsoluteMove(next.X, next.Y);
+                TrackCursor(next);
+            }
+            else
+            {
+                SendMouse(relative.X, relative.Y, 0, NativeMethods.MouseeventfMove);
+            }
+        }
+
+        return PointerInjectionResult.Continue;
+    }
+
+    /// <summary>
+    /// Uses the Mac's corrected size for the display when it sent one,
+    /// otherwise the display's own EDID size.
+    /// </summary>
+    private void ApplyPhysicalScale(DisplayDescriptor display)
+    {
+        _scaledDisplayId = display.StableId;
+        var size = _layout.Sizes.TryGetValue(display.StableId, out var corrected)
+            ? corrected
+            : new DisplaySizeMm(display.WidthMm, display.HeightMm);
+        if (RelativeMotionMapper.PhysicalScale(_sourceUnitsPerMmX, _sourceUnitsPerMmY, display.Bounds, size) is { } scale)
+        {
+            _motionMapper.SetScale(scale.X, scale.Y);
         }
     }
 
@@ -326,6 +443,32 @@ public sealed class WindowsInputInjector
         }
 
         _lastTargetCheckUtc = DateTime.UtcNow;
+        if (_layoutMode)
+        {
+            // The pointer may be on any Windows display, so refresh them all
+            // instead of pinning the session to the entry display.
+            var displays = DisplayCatalog.GetDisplays();
+            if (displays.Count == 0)
+            {
+                throw new InputInjectionException("No Windows display is connected.");
+            }
+
+            _desktop = displays;
+            _scaledDisplayId = null;
+            if (_useAbsolutePointer)
+            {
+                // Absolute moves are normalised over the virtual desktop,
+                // which changes when a monitor is added or removed.
+                CacheVirtualScreen(displays[0]);
+                if (DesktopPointerPlanner.DisplayAt(new PixelPoint(_cursorX, _cursorY), displays) is null)
+                {
+                    TrackCursor(ReadCursorPosition());
+                }
+            }
+
+            return;
+        }
+
         VerifyTargetStillPresent(target);
     }
 

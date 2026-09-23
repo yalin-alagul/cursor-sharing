@@ -491,4 +491,6 @@ private final class FakeCursorPlatform: CursorPlatform {
         warpedPoints.append(point)
         return warpResult
     }
+    var postedMoves: [CGPoint] = []
+    func postPointerMove(to point: CGPoint) { postedMoves.append(point) }
 }

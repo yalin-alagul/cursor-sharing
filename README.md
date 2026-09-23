@@ -47,19 +47,23 @@ older Python setup has not been overwritten.
 4. On Mac, grant SideCursor **Device Control and Data Access** in System
    Settings → Privacy & Security if it is not already granted. This permission
    was named **Accessibility** before macOS 27. If SideCursor also appears in
-   **Input Monitoring**, enable it there. In **Display Route**, choose only the
-   upper external 4K display as the source.
+   **Input Monitoring**, enable it there.
 
-5. On Windows, choose the target display in **Displays & input** and save it.
-   Pointer speed is adjusted on the Mac (SideCursor Settings → pointer scale);
-   Windows maps Mac pointer units to the target display automatically. Leave
+5. On Mac, open **Display Layout**. Once Windows is connected it shows every
+   Mac and Windows display at real physical size (read from each monitor,
+   correctable per display). Drag the Windows displays to where they sit on
+   your desk; they snap against a Mac edge. The pointer crosses only where
+   edges touch (shown in green), at the same physical spot on both sides, and
+   the rest of a Windows edge stops the pointer. Pointer speed on Windows
+   matches physical distance; adjust it on the Mac (pointer scale). Leave
    **Unaccelerated 1:1 pointer movement** enabled unless you prefer Windows
    pointer acceleration. On the Mac's **Input & Gestures** tab, **Motion
    smoothing** (0–16 ms) caps the pointer send rate for high-polling mice, and
    **Windows scroll speed** scales scroll forwarding (default one eighth).
 
-6. Move through the selected Mac display's right edge to enter Windows. Move
-   through the selected Windows display's left edge to return.
+6. Move through a green edge to enter Windows. While in Windows the pointer
+   moves across all Windows displays; move back through a green edge to
+   return, and the Mac pointer reappears at the matching spot.
 
 ## Gesture compatibility
 

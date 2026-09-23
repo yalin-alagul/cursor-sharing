@@ -1,6 +1,8 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32;
 using SideCursor.Windows.Core;
 using SideCursor.Windows.Infrastructure;
 using SideCursor.Windows.Protocol;
@@ -43,9 +45,13 @@ public sealed class WindowsSession : IDisposable
         ArgumentNullException.ThrowIfNull(channel);
         _channel = channel;
         _clipboard.LocalTextChanged += OnLocalClipboardChanged;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         try
         {
             using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _sessionCancellation.Token);
+            // The Mac arranges the physical layout, so it needs every Windows
+            // display and its size before the first handoff.
+            await SendDisplaysSafelyAsync(linkedCancellation.Token).ConfigureAwait(false);
             var pingTask = RunPingLoopAsync(linkedCancellation.Token);
             try
             {
@@ -71,6 +77,7 @@ public sealed class WindowsSession : IDisposable
         finally
         {
             _clipboard.LocalTextChanged -= OnLocalClipboardChanged;
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             ReleaseInputSafely("session ended");
             _channel = null;
         }
@@ -122,6 +129,7 @@ public sealed class WindowsSession : IDisposable
         }
 
         _clipboard.LocalTextChanged -= OnLocalClipboardChanged;
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _sessionCancellation.Cancel();
         _sessionCancellation.Dispose();
     }
@@ -158,6 +166,11 @@ public sealed class WindowsSession : IDisposable
             case "pong":
                 HandlePong(message);
                 break;
+            case "layout":
+                var layout = ParseLayout(message);
+                _input.ConfigureLayout(layout);
+                _diagnostics.Add($"Mac layout received: {layout.Zones.Count} return edge(s).");
+                break;
             default:
                 throw new ProtocolViolationException($"Unsupported v2 message type '{type}'.");
         }
@@ -183,7 +196,27 @@ public sealed class WindowsSession : IDisposable
             var sourceDisplay = RequiredString(source, "display");
             var sourceWidth = ReadPositiveInt(source, "width");
             var sourceHeight = ReadPositiveInt(source, "height");
-            var target = _input.EnterRemote(_configuration, sourceDisplay, sourceWidth, sourceHeight, normalizedY);
+            // Physical-layout entries name the exact Windows display and pixel.
+            string? targetDisplay = null;
+            PixelPoint? targetPoint = null;
+            if (message.TryGetProperty("target", out var targetElement) && targetElement.ValueKind == JsonValueKind.Object)
+            {
+                targetDisplay = RequiredString(targetElement, "display");
+                targetPoint = new PixelPoint(
+                    ReadIntInRange(targetElement, "x", -1_000_000, 1_000_000),
+                    ReadIntInRange(targetElement, "y", -1_000_000, 1_000_000));
+            }
+
+            var target = _input.EnterRemote(
+                _configuration,
+                sourceDisplay,
+                sourceWidth,
+                sourceHeight,
+                normalizedY,
+                targetDisplay,
+                targetPoint,
+                ReadOptionalMillimeters(source, "widthMm"),
+                ReadOptionalMillimeters(source, "heightMm"));
             // Confirm the session reached Remote *before* acknowledging entry.
             // If the state slipped (a concurrent shutdown or local return), the
             // Mac must never be told entry succeeded, otherwise it would capture
@@ -232,7 +265,7 @@ public sealed class WindowsSession : IDisposable
                 var result = _input.InjectPointer(ReadFiniteDouble(input, "dx"), ReadFiniteDouble(input, "dy"));
                 if (result.ReturnRequested)
                 {
-                    await BeginReturnAsync(result.ReturnY, cancellationToken).ConfigureAwait(false);
+                    await BeginReturnAsync(result.ReturnY, cancellationToken, result.MacPoint).ConfigureAwait(false);
                 }
 
                 break;
@@ -374,7 +407,7 @@ public sealed class WindowsSession : IDisposable
         }
     }
 
-    private async Task BeginReturnAsync(double normalizedY, CancellationToken cancellationToken)
+    private async Task BeginReturnAsync(double normalizedY, CancellationToken cancellationToken, MacReturnPoint? mac = null)
     {
         if (!_state.BeginReturning())
         {
@@ -383,10 +416,21 @@ public sealed class WindowsSession : IDisposable
 
         try
         {
-            ReleaseInputSafely("Windows target left edge reached");
+            ReleaseInputSafely("Windows return edge reached");
             _returnRequestId = Guid.NewGuid().ToString("D");
-            await SendAsync(new { type = "return_request", id = _returnRequestId, y = Math.Clamp(normalizedY, 0.0, 1.0) }, cancellationToken).ConfigureAwait(false);
-            _diagnostics.Add("Windows target left edge reached; requested return to Mac.");
+            var y = Math.Clamp(normalizedY, 0.0, 1.0);
+            // `mac` tells the Mac where the pointer physically comes back.
+            object request = mac is null
+                ? new { type = "return_request", id = _returnRequestId, y }
+                : new
+                {
+                    type = "return_request",
+                    id = _returnRequestId,
+                    y,
+                    mac = new { display = mac.Display, edge = mac.Edge.ToWire(), x = mac.X, y = mac.Y },
+                };
+            await SendAsync(request, cancellationToken).ConfigureAwait(false);
+            _diagnostics.Add("Windows return edge reached; requested return to Mac.");
         }
         catch
         {
@@ -543,6 +587,113 @@ public sealed class WindowsSession : IDisposable
         }
 
         return parsed;
+    }
+
+    /// <summary>Optional physical size; zero when absent or not plausible.</summary>
+    private static double ReadOptionalMillimeters(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return 0;
+        }
+
+        return value.TryGetDouble(out var parsed) && double.IsFinite(parsed) && parsed is >= 20 and <= 10_000 ? parsed : 0;
+    }
+
+    /// <summary>
+    /// Parses the Mac's layout message: corrected Windows display sizes and the
+    /// return zones where Windows edges physically touch Mac displays.
+    /// </summary>
+    internal static LayoutUpdate ParseLayout(JsonElement message)
+    {
+        const int maximumEntries = 64;
+        if (!message.TryGetProperty("displays", out var displays) || displays.ValueKind != JsonValueKind.Array ||
+            !message.TryGetProperty("zones", out var zones) || zones.ValueKind != JsonValueKind.Array ||
+            displays.GetArrayLength() > maximumEntries || zones.GetArrayLength() > maximumEntries)
+        {
+            throw new ProtocolViolationException("Layout message must include display and zone arrays.");
+        }
+
+        var sizes = new Dictionary<string, DisplaySizeMm>(StringComparer.OrdinalIgnoreCase);
+        foreach (var display in displays.EnumerateArray())
+        {
+            sizes[RequiredString(display, "id")] = new DisplaySizeMm(ReadFiniteDouble(display, "widthMm"), ReadFiniteDouble(display, "heightMm"));
+        }
+
+        var parsedZones = new List<ReturnZone>();
+        foreach (var zone in zones.EnumerateArray())
+        {
+            if (!zone.TryGetProperty("mac", out var mac) || mac.ValueKind != JsonValueKind.Object)
+            {
+                throw new ProtocolViolationException("Layout zone must include its Mac side.");
+            }
+
+            parsedZones.Add(new ReturnZone(
+                RequiredString(zone, "display"),
+                ReadEdge(zone),
+                ReadFiniteDouble(zone, "line"),
+                ReadFiniteDouble(zone, "start"),
+                ReadFiniteDouble(zone, "end"),
+                new MacZoneSide(
+                    RequiredString(mac, "display"),
+                    ReadEdge(mac),
+                    ReadFiniteDouble(mac, "line"),
+                    ReadFiniteDouble(mac, "start"),
+                    ReadFiniteDouble(mac, "end"))));
+        }
+
+        return new LayoutUpdate(sizes, parsedZones);
+    }
+
+    private static ScreenEdge ReadEdge(JsonElement element)
+    {
+        return ScreenEdges.TryParse(RequiredString(element, "edge"), out var edge)
+            ? edge
+            : throw new ProtocolViolationException("Layout edge must be left, right, top or bottom.");
+    }
+
+    private async Task SendDisplaysSafelyAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var displays = DisplayCatalog.GetDisplays().Select(static display => new
+            {
+                id = display.StableId,
+                name = display.FriendlyName,
+                x = display.Bounds.Left,
+                y = display.Bounds.Top,
+                width = display.Bounds.Width,
+                height = display.Bounds.Height,
+                widthMm = display.WidthMm,
+                heightMm = display.HeightMm,
+                primary = display.IsPrimary,
+            }).ToArray();
+            await SendAsync(new { type = "displays", displays }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is Win32Exception or IOException or ObjectDisposedException or OperationCanceledException)
+        {
+            _diagnostics.Add($"Could not send the Windows display list: {exception.Message}");
+        }
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs eventArgs)
+    {
+        if (_channel is null || Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        CancellationToken token;
+        try
+        {
+            token = _sessionCancellation.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        _ = Task.Run(() => SendDisplaysSafelyAsync(token));
     }
 
     private static double ReadNormalized(JsonElement element, string property)

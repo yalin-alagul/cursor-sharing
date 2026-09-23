@@ -16,6 +16,9 @@ public enum InputGateMode: Equatable {
 public struct InputGateSnapshot {
     public let mode: InputGateMode
     public let route: EdgeRoute?
+    /// Physical-layout handoff stretches. When non-empty they replace the
+    /// legacy single right-edge `route`.
+    public let entryZones: [EntryZone]
     public let handoffBlockedUntil: Date
     public let hotkeys: RemoteHotkeys
     public let scrollScale: Double
@@ -28,16 +31,24 @@ public final class InputGate {
     private let lock = NSLock()
     private var mode: InputGateMode = .local
     private var route: EdgeRoute?
+    private var entryZones: [EntryZone] = []
     private var handoffBlockedUntil = Date.distantPast
     private var hotkeys = RemoteHotkeys()
     private var scrollScale = 0.125
 
     public init() {}
 
-    public func update(phase: SessionPhase, route: EdgeRoute?, hotkeys: RemoteHotkeys, scrollScale: Double) {
+    public func update(
+        phase: SessionPhase,
+        route: EdgeRoute?,
+        entryZones: [EntryZone] = [],
+        hotkeys: RemoteHotkeys,
+        scrollScale: Double
+    ) {
         lock.lock()
         defer { lock.unlock() }
         self.route = route
+        self.entryZones = entryZones
         self.hotkeys = hotkeys
         self.scrollScale = max(0.02, min(1.0, scrollScale))
         switch phase {
@@ -62,6 +73,7 @@ public final class InputGate {
         return InputGateSnapshot(
             mode: mode,
             route: route,
+            entryZones: entryZones,
             handoffBlockedUntil: handoffBlockedUntil,
             hotkeys: hotkeys,
             scrollScale: scrollScale
@@ -228,6 +240,8 @@ public final class RemoteInputSink: @unchecked Sendable {
 
 public enum InputTapAction {
     case edgeCrossed(y: Double)
+    /// The pointer crossed a physical-layout handoff stretch at `point`.
+    case zoneCrossed(EntryZone, point: CGPoint)
     case input(NativeInputEvent)
     case command(String)
     case panicHotkey
@@ -444,6 +458,12 @@ public final class InputEventTap {
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .mouseMoved,
+           event.getIntegerValueField(.eventSourceUserData) == CursorController.syntheticMoveTag {
+            // SideCursor's own return move: let it place the pointer.
+            lastMotionLocation = event.location
+            return Unmanaged.passUnretained(event)
+        }
         if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged,
            let started = returnProbeStartedAt {
             returnProbeStartedAt = nil
@@ -537,6 +557,26 @@ public final class InputEventTap {
             if dx != 0 || dy != 0 { forward(.pointer(dx: dx, dy: dy)) }
             return nil
         case .ready:
+            if !snapshot.entryZones.isEmpty {
+                if Date() >= snapshot.handoffBlockedUntil,
+                   let zone = snapshot.entryZones.first(where: {
+                       $0.crosses(location, previous: previousLocation, deltaX: Int64(dx), deltaY: Int64(dy))
+                   }) {
+                    emit(.zoneCrossed(zone, point: location))
+                } else if let zone = snapshot.entryZones.first(where: { $0.isNear(location) }),
+                          Date().timeIntervalSince(lastProbeAt) >= 1 {
+                    lastProbeAt = Date()
+                    emit(.handoffProbe(
+                        x: Double(location.x),
+                        y: Double(location.y),
+                        deltaX: Int64(zone.edge.runsAlongY ? dx : dy),
+                        previousX: previousLocation.map { Double(zone.edge.runsAlongY ? $0.x : $0.y) },
+                        minX: zone.start,
+                        maxX: zone.end
+                    ))
+                }
+                return Unmanaged.passUnretained(event)
+            }
             guard let route = snapshot.route else { return Unmanaged.passUnretained(event) }
             if Date() >= snapshot.handoffBlockedUntil,
                route.crossesFromInside(location, deltaX: Int64(dx), previous: previousLocation) {
