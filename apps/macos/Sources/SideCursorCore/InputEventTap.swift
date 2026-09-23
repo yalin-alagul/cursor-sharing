@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -293,6 +294,12 @@ public final class InputEventTap {
     private static let swipeGestureKind: Int64 = 6
     /// A swipe accumulates tens of pixels of displacement, far above this.
     private static let gestureSwipeThreshold = 5.0
+    /// Pinch arrives as magnify gestures (NSEvent type 30, or a type 29
+    /// gesture that AppKit decodes as magnify).
+    private static let magnifyEventType = CGEventType(rawValue: 30)
+    /// Accumulated pinch magnification that makes one Windows Ctrl+wheel
+    /// zoom step.
+    private static let zoomMagnificationPerStep = 0.15
     private let gate: InputGate
     private let actionHandler: (InputTapAction) -> Void
     private let actionQueue: DispatchQueue
@@ -313,6 +320,8 @@ public final class InputEventTap {
     /// notches (the configured scroll fraction is applied in `scaleScroll`).
     private var scrollRemainderH = 0.0
     private var scrollRemainderV = 0.0
+    /// Fractional pinch steps carried across magnify events.
+    private var zoomRemainder = 0.0
     /// True when macOS installed the tap as a filter (events can be
     /// suppressed).  A tap created before permission was granted is silently
     /// made listen-only, which lets local input leak during remote mode.
@@ -474,17 +483,40 @@ public final class InputEventTap {
         if type == .keyDown || type == .keyUp || type == .flagsChanged {
             return handleKey(type, event: event, snapshot: snapshot)
         }
+        if snapshot.mode == .remote,
+           type == Self.gestureEventType || type == Self.magnifyEventType,
+           let magnify = NSEvent(cgEvent: event), magnify.type == .magnify {
+            handleMagnify(magnify)
+            return nil
+        }
         if type == Self.gestureEventType {
             return handleGesture(event, snapshot: snapshot)
         }
-        // Everything else includes the remaining gesture events (magnify,
-        // rotate) and other non-input events.  They are dropped while a remote
+        // Everything else includes the remaining gesture events (rotate,
+        // local-mode magnify) and other non-input events.  They are dropped while a remote
         // session owns input so those actions never fire.
         switch snapshot.mode {
         case .remote, .entering, .returning, .recovering:
             return nil
         case .local, .ready:
             return Unmanaged.passUnretained(event)
+        }
+    }
+
+    /// Two-finger pinch becomes whole zoom steps, which Windows replays as
+    /// Ctrl+wheel. The remainder is carried across events so a slow pinch
+    /// still zooms, and discarded when a pinch starts or reverses.
+    private func handleMagnify(_ event: NSEvent) {
+        let magnification = event.magnification
+        if event.phase.contains(.began) || magnification == 0 || (magnification > 0) != (zoomRemainder > 0) {
+            zoomRemainder = 0
+        }
+        let scaled = magnification / Self.zoomMagnificationPerStep + zoomRemainder
+        // Windows rejects more than 20 steps in one event as malformed.
+        let steps = max(-20, min(20, Int(scaled)))
+        zoomRemainder = scaled - Double(Int(scaled))
+        if steps != 0 {
+            forward(.zoom(steps: steps))
         }
     }
 

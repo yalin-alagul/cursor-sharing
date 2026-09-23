@@ -75,6 +75,7 @@ from the wire header and never from the nonce.
 {"type":"input","event":{"kind":"button","button":"left","down":true}}
 {"type":"input","event":{"kind":"scroll","horizontal":0,"vertical":-1}}
 {"type":"input","event":{"kind":"key","vk":17,"down":true,"extended":false}}
+{"type":"input","event":{"kind":"zoom","steps":1}}
 {"type":"command","name":"desktop_left"}
 {"type":"return_request","id":"uuid","y":0.5}
 {"type":"return_ack","id":"uuid"}
