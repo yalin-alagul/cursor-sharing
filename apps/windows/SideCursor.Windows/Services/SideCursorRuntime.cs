@@ -381,7 +381,10 @@ public sealed class SideCursorRuntime : IAsyncDisposable
         string? displayLabel = null;
         try
         {
-            displayLabel = DisplayCatalog.ResolveTarget(configuration).Label;
+            var target = DisplayCatalog.ResolveTarget(configuration);
+            displayLabel = DisplayCatalog.IsConfiguredTarget(configuration, target)
+                ? target.Label
+                : $"{target.Label} (saved display not connected; using this one)";
         }
         catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
         {

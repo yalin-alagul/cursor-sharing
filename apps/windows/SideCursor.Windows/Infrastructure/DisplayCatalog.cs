@@ -67,21 +67,30 @@ public static class DisplayCatalog
         return displays.OrderBy(static display => display.DeviceName, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    public static DisplayDescriptor ResolveTarget(SideCursorConfig configuration)
+    public static DisplayDescriptor ResolveTarget(SideCursorConfig configuration) =>
+        ResolveTarget(configuration, GetDisplays());
+
+    /// <summary>
+    /// Prefers the saved target display. When that monitor is not connected
+    /// (a different external monitor, a closed lid, a new dock port), falls
+    /// back to the primary display instead of rejecting every remote entry.
+    /// The saved choice is left untouched so it wins again once reconnected.
+    /// </summary>
+    public static DisplayDescriptor ResolveTarget(SideCursorConfig configuration, IReadOnlyList<DisplayDescriptor> displays)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        var displays = GetDisplays();
-        var configured = displays.FirstOrDefault(display => string.Equals(display.StableId, configuration.TargetDisplayId, StringComparison.OrdinalIgnoreCase));
+        ArgumentNullException.ThrowIfNull(displays);
+        var configured = displays.FirstOrDefault(display => IsConfiguredTarget(configuration, display));
         if (configured is not null)
         {
             return configured;
         }
 
-        if (string.IsNullOrWhiteSpace(configuration.TargetDisplayId) && displays.Count == 1)
-        {
-            return displays[0];
-        }
-
-        throw new InvalidOperationException("The configured Windows target display is unavailable. Select an available display before entering remote mode.");
+        return displays.FirstOrDefault(static display => display.IsPrimary)
+            ?? (displays.Count > 0 ? displays[0] : null)
+            ?? throw new InvalidOperationException("No Windows display is available for remote mode.");
     }
+
+    public static bool IsConfiguredTarget(SideCursorConfig configuration, DisplayDescriptor display) =>
+        string.Equals(display.StableId, configuration.TargetDisplayId, StringComparison.OrdinalIgnoreCase);
 }
