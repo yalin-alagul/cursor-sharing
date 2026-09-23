@@ -2,11 +2,15 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using SideCursor.Windows.Core;
 using SideCursor.Windows.Infrastructure;
 using SideCursor.Windows.Services;
 
 namespace SideCursor.Windows;
+
+/// <summary>One of this PC's displays, as listed on the Displays page.</summary>
+public sealed record DisplayRow(string Name, string Detail, Visibility PrimaryVisibility);
 
 public partial class MainWindow : Window
 {
@@ -18,6 +22,9 @@ public partial class MainWindow : Window
     {
         _runtime = runtime;
         InitializeComponent();
+        // Selected here, not in XAML: selecting during XAML loading raises
+        // SelectionChanged before the pages below the sidebar exist.
+        Navigation.SelectedIndex = 0;
         Loaded += OnLoaded;
         _runtime.StatusChanged += OnRuntimeStatusChanged;
     }
@@ -39,13 +46,11 @@ public partial class MainWindow : Window
             DesktopRightText.Text = configuration.Commands.DesktopRight;
             TaskViewText.Text = configuration.Commands.TaskView;
             ShowDesktopText.Text = configuration.Commands.ShowDesktop;
-            BluetoothServiceText.Text = BluetoothRfcommListener.ServiceUuid.ToString("D");
-            PairingStateText.Text = _runtime.HasPairingSecret
-                ? "A pairing secret is protected with Windows DPAPI."
-                : "No pairing secret saved yet.";
+            BluetoothServiceRun.Text = BluetoothRfcommListener.ServiceUuid.ToString("D");
+            PairingStateText.Text = PairingStateDescription;
             ElevationText.Text = SideCursorRuntime.IsElevated
-                ? "Running elevated. It can inject into elevated apps on this desktop."
-                : "Running as a standard user. Elevated Windows apps cannot receive injected input unless SideCursor is elevated too.";
+                ? "Running as administrator, so it can also control apps that run as administrator."
+                : "To control apps that run as administrator, run SideCursor as administrator too.";
             RefreshDisplays(configuration.TargetDisplayId);
             RefreshDiagnostics();
         }
@@ -83,15 +88,41 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnDiagnosticsClick(object sender, RoutedEventArgs eventArgs)
+    private void OnSourceInitialized(object? sender, EventArgs eventArgs)
     {
-        var tabControl = FindChild<TabControl>(this);
-        if (tabControl is not null)
+        Theme.ApplyTitleBar(this);
+    }
+
+    private void OnNavigationChanged(object sender, SelectionChangedEventArgs eventArgs)
+    {
+        if ((Navigation.SelectedItem as ListBoxItem)?.Tag is string page)
         {
-            tabControl.SelectedIndex = 4;
+            ShowPage(page);
+        }
+    }
+
+    /// <summary>Shows one page: Status, Connection, Displays, Input, Clipboard or Diagnostics.</summary>
+    internal void ShowPage(string page)
+    {
+        StatusPage.Visibility = page == "Status" ? Visibility.Visible : Visibility.Collapsed;
+        ConnectionPage.Visibility = page == "Connection" ? Visibility.Visible : Visibility.Collapsed;
+        DisplaysPage.Visibility = page == "Displays" ? Visibility.Visible : Visibility.Collapsed;
+        InputPage.Visibility = page == "Input" ? Visibility.Visible : Visibility.Collapsed;
+        ClipboardPage.Visibility = page == "Clipboard" ? Visibility.Visible : Visibility.Collapsed;
+        DiagnosticsPage.Visibility = page == "Diagnostics" ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var item in Navigation.Items.OfType<ListBoxItem>())
+        {
+            if (item.Tag as string == page && !item.IsSelected)
+            {
+                item.IsSelected = true;
+            }
         }
 
-        RefreshDiagnostics();
+        PageScroller.ScrollToTop();
+        if (page == "Diagnostics")
+        {
+            RefreshDiagnostics();
+        }
     }
 
     private async void OnSaveSettingsClick(object sender, RoutedEventArgs eventArgs)
@@ -169,16 +200,22 @@ public partial class MainWindow : Window
     {
         Dispatcher.BeginInvoke(() =>
         {
-            SessionStateText.Text = $"{snapshot.State}: {snapshot.Detail}";
+            var (title, glyph, color) = Describe(snapshot.State);
+            StatusTitleText.Text = title;
+            StatusGlyph.Text = glyph;
+            StatusBadge.Fill = new SolidColorBrush(color);
+            NavStatusText.Text = title;
+            SessionStateText.Text = snapshot.Detail;
+            ReturnButton.IsEnabled = snapshot.State is SessionState.Remote or SessionState.Entering or SessionState.Returning;
             TransportStateText.Text = snapshot.Transport == TransportKind.TailscaleTcp
-                ? "Tailscale TCP"
+                ? "Tailscale"
                 : snapshot.IsBluetoothListening
-                    ? "Bluetooth RFCOMM listener ready"
-                    : "Bluetooth RFCOMM";
+                    ? "Bluetooth (waiting for the Mac)"
+                    : "Bluetooth";
             LatencyText.Text = snapshot.RoundTripMilliseconds is { } milliseconds
                 ? $"{milliseconds:F0} ms"
-                : "Waiting for peer";
-            TargetDisplayStateText.Text = snapshot.TargetDisplayLabel ?? "Select an available target display";
+                : "—";
+            TargetDisplayStateText.Text = snapshot.TargetDisplayLabel ?? "—";
             RefreshDiagnostics();
         });
     }
@@ -189,9 +226,7 @@ public partial class MainWindow : Window
         var pairingCode = string.IsNullOrWhiteSpace(PairingCodeBox.Password) ? null : PairingCodeBox.Password;
         _runtime.SaveConfiguration(configuration, pairingCode);
         PairingCodeBox.Clear();
-        PairingStateText.Text = _runtime.HasPairingSecret
-            ? "A pairing secret is protected with Windows DPAPI."
-            : "No pairing secret saved yet.";
+        PairingStateText.Text = PairingStateDescription;
         if (reconnect)
         {
             await _runtime.ReconnectAsync();
@@ -266,9 +301,38 @@ public partial class MainWindow : Window
         BluetoothSettingsPanel.Visibility = isTcp ? Visibility.Collapsed : Visibility.Visible;
     }
 
+    private string PairingStateDescription => _runtime.HasPairingSecret
+        ? "Saved and protected by Windows. Paste a new code only to replace it."
+        : "No pairing code saved yet. Paste the code from the Mac.";
+
+    /// <summary>Plain-English title, Segoe icon glyph and colour for a session state.</summary>
+    internal static (string Title, string Glyph, Color Color) Describe(SessionState state) => state switch
+    {
+        SessionState.Disconnected => ("Not connected", "\uE711", Color.FromRgb(0xC4, 0x2B, 0x1C)),
+        SessionState.Connecting => ("Waiting for the Mac", "\uE895", Color.FromRgb(0x9D, 0x5D, 0x00)),
+        SessionState.Ready => ("Ready", "\uE73E", Color.FromRgb(0x0F, 0x7B, 0x0F)),
+        SessionState.Entering => ("Switching to Windows…", "\uE8AB", Color.FromRgb(0x9D, 0x5D, 0x00)),
+        SessionState.Remote => ("The Mac is controlling this PC", "\uE7F4", Color.FromRgb(0x00, 0x5F, 0xB8)),
+        SessionState.Returning => ("Returning to the Mac…", "\uE8AB", Color.FromRgb(0x9D, 0x5D, 0x00)),
+        _ => ("Recovering…", "\uE72C", Color.FromRgb(0x9D, 0x5D, 0x00)),
+    };
+
     private void RefreshDisplays(string selectedStableId)
     {
         _displays = SideCursorRuntime.GetDisplays();
+        DisplayList.ItemsSource = _displays.Select(static display => new DisplayRow(
+            display.FriendlyName,
+            display.WidthMm >= 20
+                ? string.Format(
+                    CultureInfo.CurrentCulture,
+                    "{0} × {1}  ·  {2:0} × {3:0} mm ({4:0.0}″)",
+                    display.Bounds.Width,
+                    display.Bounds.Height,
+                    display.WidthMm,
+                    display.HeightMm,
+                    Math.Sqrt(display.WidthMm * display.WidthMm + display.HeightMm * display.HeightMm) / 25.4)
+                : $"{display.Bounds.Width} × {display.Bounds.Height}  ·  size not reported",
+            display.IsPrimary ? Visibility.Visible : Visibility.Collapsed)).ToArray();
         TargetDisplayCombo.ItemsSource = _displays;
         TargetDisplayCombo.SelectedItem = _displays.FirstOrDefault(display => string.Equals(display.StableId, selectedStableId, StringComparison.OrdinalIgnoreCase))
             ?? (_displays.Count > 0 ? _displays[0] : null);
@@ -290,28 +354,6 @@ public partial class MainWindow : Window
     {
         eventArgs.Cancel = true;
         ((App)Application.Current).HideMainWindow();
-    }
-
-    private static T? FindChild<T>(DependencyObject parent)
-        where T : DependencyObject
-    {
-        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent);
-        for (var index = 0; index < count; index++)
-        {
-            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, index);
-            if (child is T matched)
-            {
-                return matched;
-            }
-
-            var nested = FindChild<T>(child);
-            if (nested is not null)
-            {
-                return nested;
-            }
-        }
-
-        return null;
     }
 
     private static void ShowError(Exception exception)

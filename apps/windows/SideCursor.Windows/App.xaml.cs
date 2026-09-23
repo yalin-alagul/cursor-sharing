@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using SideCursor.Windows.Infrastructure;
 using SideCursor.Windows.Services;
 using Forms = System.Windows.Forms;
@@ -42,6 +43,8 @@ public partial class App : System.Windows.Application
         // explicit for unpackaged launches before any WPF window is created.
         _ = NativeMethods.SetProcessDpiAwarenessContext(new IntPtr(-4));
         base.OnStartup(e);
+        Theme.Apply(Resources, Theme.SystemPrefersDark());
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         try
         {
@@ -74,6 +77,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _trayIcon?.Dispose();
         _trayIcon = null;
         if (Runtime is not null)
@@ -135,12 +139,56 @@ public partial class App : System.Windows.Application
 
         _trayIcon = new Forms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = LoadTrayIcon() ?? System.Drawing.SystemIcons.Application,
             Text = "SideCursor: starting",
             Visible = true,
             ContextMenuStrip = menu,
         };
         _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(ShowMainWindow);
+    }
+
+    /// <summary>The app icon at the tray's small-icon size for this DPI.</summary>
+    private static System.Drawing.Icon? LoadTrayIcon()
+    {
+        try
+        {
+            var resource = GetResourceStream(new Uri("pack://application:,,,/SideCursor.Windows;component/Assets/SideCursor.ico"));
+            if (resource is null)
+            {
+                return null;
+            }
+
+            using var stream = resource.Stream;
+            return new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize);
+        }
+        catch (Exception exception) when (exception is IOException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Follows the Windows light/dark app theme while running.</summary>
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs eventArgs)
+    {
+        if (eventArgs.Category != UserPreferenceCategory.General)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            var dark = Theme.SystemPrefersDark();
+            if (dark == Theme.IsDark)
+            {
+                return;
+            }
+
+            Theme.Apply(Resources, dark);
+            if (MainWindow is not null)
+            {
+                Theme.ApplyTitleBar(MainWindow);
+            }
+        });
     }
 
     /// <summary>
