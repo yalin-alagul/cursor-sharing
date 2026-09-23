@@ -22,8 +22,8 @@ public enum SessionState
 
 public sealed class SideCursorConfig
 {
-    public const int CurrentSchemaVersion = 1;
-    public const int MaximumClipboardBytes = 1024 * 1024;
+    public const int CurrentSchemaVersion = 2;
+    public const int MaximumClipboardBytes = 10 * 1024 * 1024;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public string DeviceId { get; set; } = Guid.NewGuid().ToString("D");
@@ -51,6 +51,13 @@ public sealed class SideCursorConfig
 
     public void Normalize()
     {
+        // Version 1 capped the clipboard at 1 MiB (also its default); lift
+        // that old ceiling to the new 10 MiB maximum once.
+        if (SchemaVersion < 2 && ClipboardMaximumBytes == 1024 * 1024)
+        {
+            ClipboardMaximumBytes = MaximumClipboardBytes;
+        }
+
         SchemaVersion = CurrentSchemaVersion;
         if (!Guid.TryParse(DeviceId, out _))
         {
@@ -543,5 +550,96 @@ internal static class DesktopPointerPlanner
         }
 
         return clamped == current ? default : new DesktopPointerPlan(clamped, null, null);
+    }
+}
+
+/// <summary>
+/// Splits a large clipboard text into clipboard_part slices of at most a given
+/// number of UTF-8 bytes, never between the halves of a surrogate pair.
+/// </summary>
+public static class ClipboardParts
+{
+    public static IReadOnlyList<string> Split(string text, int maximumBytes)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (System.Text.Encoding.UTF8.GetByteCount(text) <= maximumBytes)
+        {
+            return [text];
+        }
+
+        var parts = new List<string>();
+        var start = 0;
+        var bytes = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var width = char.IsHighSurrogate(text[index]) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1]) ? 2 : 1;
+            var size = System.Text.Encoding.UTF8.GetByteCount(text.AsSpan(index, width));
+            if (bytes + size > maximumBytes && index > start)
+            {
+                parts.Add(text[start..index]);
+                start = index;
+                bytes = 0;
+            }
+
+            bytes += size;
+            index += width - 1;
+        }
+
+        parts.Add(text[start..]);
+        return parts;
+    }
+}
+
+/// <summary>
+/// Reassembles clipboard_part messages. Parts arrive in order on the encrypted
+/// stream; a gap, a new transfer, or a total over the limit discards the
+/// partial text so it never reaches the clipboard.
+/// </summary>
+public sealed class ClipboardAssembler
+{
+    private readonly List<string> _parts = [];
+    private string? _id;
+    private int _count;
+    private long _bytes;
+
+    public string? Add(string id, int index, int count, string text, int maximumBytes, int maximumParts)
+    {
+        if (index == 0)
+        {
+            Reset();
+            _id = id;
+            _count = count;
+        }
+
+        if (!string.Equals(id, _id, StringComparison.OrdinalIgnoreCase) || count != _count || count > maximumParts || index != _parts.Count)
+        {
+            Reset();
+            return null;
+        }
+
+        _bytes += System.Text.Encoding.UTF8.GetByteCount(text);
+        if (_bytes > maximumBytes)
+        {
+            Reset();
+            return null;
+        }
+
+        _parts.Add(text);
+        if (_parts.Count < _count)
+        {
+            return null;
+        }
+
+        var complete = string.Concat(_parts);
+        Reset();
+        return complete;
+    }
+
+    public void Reset()
+    {
+        _parts.Clear();
+        _id = null;
+        _count = 0;
+        _bytes = 0;
     }
 }

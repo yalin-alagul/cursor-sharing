@@ -1,7 +1,10 @@
+using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using SideCursor.Windows.Core;
 using SideCursor.Windows.Infrastructure;
+using SideCursor.Windows.Protocol;
 
 namespace SideCursor.Windows.Tests;
 
@@ -85,6 +88,55 @@ public sealed class ConfigurationAndInputTests
         var wheel = Assert.Single(inputs);
         Assert.Equal(NativeMethods.InputMouse, wheel.Type);
         Assert.Equal(-120, unchecked((int)wheel.Data.Mouse.MouseData));
+    }
+
+    [Fact]
+    public void LargeClipboardSplitsWithoutBreakingSurrogatePairsAndReassembles()
+    {
+        var text = string.Concat(Enumerable.Repeat("Yalın 🙂 ", 20_000));
+        var parts = ClipboardParts.Split(text, V2Protocol.ClipboardPartBytes);
+
+        Assert.True(parts.Count > 1);
+        Assert.All(parts, part =>
+        {
+            Assert.True(System.Text.Encoding.UTF8.GetByteCount(part) <= V2Protocol.ClipboardPartBytes);
+            Assert.False(char.IsHighSurrogate(part[^1]));
+        });
+
+        var assembler = new ClipboardAssembler();
+        var id = Guid.NewGuid().ToString("D");
+        string? result = null;
+        for (var index = 0; index < parts.Count; index++)
+        {
+            result = assembler.Add(id, index, parts.Count, parts[index], V2Protocol.MaximumClipboardBytes, V2Protocol.MaximumClipboardParts);
+        }
+
+        Assert.Equal(text, result);
+    }
+
+    [Fact]
+    public void ClipboardAssemblerDropsSupersededAndOversizedTransfers()
+    {
+        var assembler = new ClipboardAssembler();
+        Assert.Null(assembler.Add("a", 0, 2, "old ", 100, 10));
+        Assert.Null(assembler.Add("b", 0, 2, "new ", 100, 10));
+        Assert.Null(assembler.Add("a", 1, 2, "tail", 100, 10));
+        Assert.Null(assembler.Add("b", 1, 2, "text", 100, 10));
+
+        Assert.Null(assembler.Add("c", 0, 2, "12345", 8, 10));
+        Assert.Null(assembler.Add("c", 1, 2, "67890", 8, 10));
+    }
+
+    [Fact]
+    public void VersionOneClipboardCeilingMigratesToTenMegabytes()
+    {
+        var migrated = new SideCursorConfig { SchemaVersion = 1, ClipboardMaximumBytes = 1024 * 1024 };
+        migrated.Normalize();
+        Assert.Equal(10 * 1024 * 1024, migrated.ClipboardMaximumBytes);
+
+        var chosen = new SideCursorConfig { SchemaVersion = 1, ClipboardMaximumBytes = 64 * 1024 };
+        chosen.Normalize();
+        Assert.Equal(64 * 1024, chosen.ClipboardMaximumBytes);
     }
 
     [Fact]

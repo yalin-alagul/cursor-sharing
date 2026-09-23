@@ -137,6 +137,52 @@ final class NativeRecoveryTests: XCTestCase {
         XCTAssertNil(MacVirtualKeyMapper.remoteGestureCommand(fingerDx: 0, fingerDy: 30, minimum: 6, hotkeys: hotkeys))
     }
 
+    func testLargeClipboardSplitsIntoValidPartsAndReassembles() throws {
+        // Multi-byte characters straddle the part boundary.
+        let text = String(repeating: "Yalın 🙂 ", count: 20_000)
+        let parts = ClipboardParts.split(text, maximumBytes: ProtocolV2.clipboardPartBytes)
+
+        XCTAssertGreaterThan(parts.count, 1)
+        XCTAssertTrue(parts.allSatisfy { $0.utf8.count <= ProtocolV2.clipboardPartBytes })
+        XCTAssertEqual(parts.joined(), text)
+
+        var assembler = ClipboardAssembler()
+        let id = UUID()
+        var result: String?
+        for (index, part) in parts.enumerated() {
+            result = assembler.add(
+                ClipboardPart(origin: "mac", id: id, index: index, count: parts.count, text: part),
+                maximumBytes: ProtocolV2.maximumClipboardBytes
+            )
+        }
+        XCTAssertEqual(result, text)
+    }
+
+    func testClipboardAssemblerDropsSupersededOrOversizedTransfers() {
+        var assembler = ClipboardAssembler()
+        let first = UUID()
+        let second = UUID()
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: first, index: 0, count: 2, text: "old "), maximumBytes: 100))
+        // A new copy starts before the old one finished: only the new one lands.
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: second, index: 0, count: 2, text: "new "), maximumBytes: 100))
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: first, index: 1, count: 2, text: "tail"), maximumBytes: 100))
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: second, index: 1, count: 2, text: "text"), maximumBytes: 100))
+
+        let third = UUID()
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: third, index: 0, count: 2, text: "12345"), maximumBytes: 8))
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: third, index: 1, count: 2, text: "67890"), maximumBytes: 8))
+    }
+
+    func testClipboardPartMatchesSharedProtocolShape() throws {
+        let id = UUID()
+        let data = try JSONEncoder().encode(ProtocolMessage.clipboardPart(ClipboardPart(origin: "mac", id: id, index: 2, count: 5, text: "abc")))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["type"] as? String, "clipboard_part")
+        XCTAssertEqual(object["index"] as? Int, 2)
+        XCTAssertEqual(object["count"] as? Int, 5)
+        XCTAssertEqual(try JSONDecoder().decode(ProtocolMessage.self, from: data), .clipboardPart(ClipboardPart(origin: "mac", id: id, index: 2, count: 5, text: "abc")))
+    }
+
     func testZoomInputEventMatchesSharedProtocolShape() throws {
         let encoded = try JSONEncoder().encode(NativeInputEvent.zoom(steps: -2))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])

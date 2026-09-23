@@ -46,7 +46,7 @@ public struct RemoteHotkeys: Codable, Equatable {
 /// secret lives in Keychain under `pairingAccount`.
 public struct SideCursorConfiguration: Codable, Equatable {
     public static let defaultPort = 24_800
-    public static let maximumClipboardBytes = 1_048_576
+    public static let maximumClipboardBytes = ProtocolV2.maximumClipboardBytes
 
     public var transport: TransportKind
     public var listenPort: Int
@@ -180,6 +180,16 @@ public final class UserDefaultsConfigurationStore: ConfigurationStoring {
             defaults.set(true, forKey: migrationKey)
             if configuration.returnInset == 24 {
                 configuration.returnInset = 8
+                save(configuration)
+            }
+        }
+        // One-time migration: 1 MiB was the old maximum (and default). The
+        // shared clipboard now reaches 10 MiB, so lift the old ceiling.
+        let clipboardMigrationKey = "native-v2-clipboard-10mib-migrated"
+        if !defaults.bool(forKey: clipboardMigrationKey) {
+            defaults.set(true, forKey: clipboardMigrationKey)
+            if configuration.clipboardMaximumBytes == 1_048_576 {
+                configuration.clipboardMaximumBytes = SideCursorConfiguration.maximumClipboardBytes
                 save(configuration)
             }
         }

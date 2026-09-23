@@ -6,7 +6,105 @@ public enum ProtocolV2 {
     public static let version = 2
     public static let maximumHandshakeBytes = 16 * 1024
     public static let maximumFrameBytes = 2 * 1024 * 1024
-    public static let maximumClipboardBytes = 1_048_576
+    /// Largest clipboard text shared, in UTF-8 bytes (10 MiB).
+    public static let maximumClipboardBytes = 10 * 1_048_576
+    /// Largest text sent as one `clipboard` message. Anything bigger goes
+    /// as `clipboard_part` messages so it never approaches the frame limit.
+    public static let maximumClipboardMessageBytes = 1_048_576
+    /// Size of each `clipboard_part`. Small parts let pointer input slip in
+    /// between them, so a large paste never stalls the pointer, even over
+    /// Bluetooth.
+    public static let clipboardPartBytes = 16 * 1024
+    public static let maximumClipboardParts = 1024
+}
+
+/// One slice of a large clipboard text. Parts arrive in order on the
+/// encrypted stream and are joined once all `count` have arrived.
+public struct ClipboardPart: Equatable {
+    public let origin: String
+    public let id: UUID
+    public let index: Int
+    public let count: Int
+    public let text: String
+
+    public init(origin: String, id: UUID, index: Int, count: Int, text: String) {
+        self.origin = origin
+        self.id = id
+        self.index = index
+        self.count = count
+        self.text = text
+    }
+}
+
+public enum ClipboardParts {
+    /// Splits text into pieces of at most `maximumBytes` UTF-8 bytes, only
+    /// at Unicode scalar boundaries so every piece is valid text.
+    public static func split(_ text: String, maximumBytes: Int) -> [String] {
+        guard text.utf8.count > maximumBytes else { return [text] }
+        var parts: [String] = []
+        var current = String.UnicodeScalarView()
+        var currentBytes = 0
+        for scalar in text.unicodeScalars {
+            let size = String(scalar).utf8.count
+            if currentBytes + size > maximumBytes, !current.isEmpty {
+                parts.append(String(current))
+                current = String.UnicodeScalarView()
+                currentBytes = 0
+            }
+            current.append(scalar)
+            currentBytes += size
+        }
+        if !current.isEmpty {
+            parts.append(String(current))
+        }
+        return parts
+    }
+}
+
+/// Reassembles `clipboard_part` messages. A part out of order, a new
+/// transfer starting, or a total over `maximumBytes` discards the partial
+/// text, so a superseded or broken transfer never reaches the pasteboard.
+public struct ClipboardAssembler {
+    private var id: UUID?
+    private var count = 0
+    private var parts: [String] = []
+    private var bytes = 0
+
+    public init() {}
+
+    public mutating func add(_ part: ClipboardPart, maximumBytes: Int) -> String? {
+        if part.index == 0 {
+            id = part.id
+            count = part.count
+            parts = []
+            bytes = 0
+        }
+        guard part.id == id,
+              part.count == count,
+              part.count <= ProtocolV2.maximumClipboardParts,
+              part.index == parts.count
+        else {
+            reset()
+            return nil
+        }
+        bytes += part.text.utf8.count
+        guard bytes <= maximumBytes else {
+            reset()
+            return nil
+        }
+        parts.append(part.text)
+        guard parts.count == count else { return nil }
+        let text = parts.joined()
+        reset()
+        return text
+    }
+
+    public mutating func reset() {
+        id = nil
+        count = 0
+        parts = []
+        bytes = 0
+    }
 }
 
 public enum ProtocolError: Error, Equatable, LocalizedError {
@@ -218,6 +316,8 @@ public enum ProtocolMessage: Equatable {
     case displays([RemoteDisplay])
     /// Mac → Windows: effective Windows display sizes and return zones.
     case layout(LayoutUpdate)
+    /// Either direction: one slice of a clipboard text too big for one message.
+    case clipboardPart(ClipboardPart)
 }
 
 extension ProtocolMessage: Codable {
@@ -236,6 +336,8 @@ extension ProtocolMessage: Codable {
         case mac
         case displays
         case zones
+        case index
+        case count
     }
 
     public init(from decoder: Decoder) throws {
@@ -285,6 +387,14 @@ extension ProtocolMessage: Codable {
                 displays: try container.decode([LayoutUpdate.DisplaySize].self, forKey: .displays),
                 zones: try container.decode([ReturnZone].self, forKey: .zones)
             ))
+        case "clipboard_part":
+            self = .clipboardPart(ClipboardPart(
+                origin: try container.decode(String.self, forKey: .origin),
+                id: try container.decode(UUID.self, forKey: .id),
+                index: try container.decode(Int.self, forKey: .index),
+                count: try container.decode(Int.self, forKey: .count),
+                text: try container.decode(String.self, forKey: .text)
+            ))
         default:
             throw ProtocolError.malformedMessage
         }
@@ -324,7 +434,7 @@ extension ProtocolMessage: Codable {
             try container.encode("release_all", forKey: .type)
             try container.encode(reason, forKey: .reason)
         case let .clipboard(origin, text):
-            guard text.lengthOfBytes(using: .utf8) <= ProtocolV2.maximumClipboardBytes else {
+            guard text.lengthOfBytes(using: .utf8) <= ProtocolV2.maximumClipboardMessageBytes else {
                 throw ProtocolError.frameTooLarge
             }
             try container.encode("clipboard", forKey: .type)
@@ -343,6 +453,16 @@ extension ProtocolMessage: Codable {
             try container.encode("layout", forKey: .type)
             try container.encode(update.displays, forKey: .displays)
             try container.encode(update.zones, forKey: .zones)
+        case let .clipboardPart(part):
+            guard part.text.utf8.count <= ProtocolV2.maximumClipboardMessageBytes else {
+                throw ProtocolError.frameTooLarge
+            }
+            try container.encode("clipboard_part", forKey: .type)
+            try container.encode(part.origin, forKey: .origin)
+            try container.encode(part.id, forKey: .id)
+            try container.encode(part.index, forKey: .index)
+            try container.encode(part.count, forKey: .count)
+            try container.encode(part.text, forKey: .text)
         }
     }
 }
