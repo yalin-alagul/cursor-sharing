@@ -98,6 +98,12 @@ channel such as 11 is used.
 - **Control + Option + Left/Right** maps to Windows virtual desktops;
   **Control + Option + Up** maps to Task View; **Control + Option + Down** maps
   to Show Desktop. Each can be disabled in settings.
+- Three-finger trackpad swipes do the same in remote mode: left/right switch
+  desktops, up opens Task View, and down shows the desktop. Two-finger
+  scrolling is unaffected. This relies on macOS three-finger swipes being off
+  (System Settings → Trackpad), which makes macOS report them as scrolls that
+  SideCursor tells apart by finger count. Two-finger pinch zooms on Windows
+  (sent as Ctrl + mouse wheel).
 - Mac Command maps to Windows, Control to Control, Option to Alt, and Shift
   to Shift.
 - A failed entry acknowledgement, lost peer, display change, permission loss,
