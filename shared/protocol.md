@@ -82,6 +82,7 @@ from the wire header and never from the nonce.
 {"type":"release_all","reason":"disconnect"}
 {"type":"clipboard","origin":"peer-uuid","text":"plain text"}
 {"type":"clipboard_part","origin":"peer-uuid","id":"uuid","index":0,"count":640,"text":"first 16 KiB"}
+{"type":"clipboard_part","origin":"peer-uuid","id":"uuid","index":0,"count":12,"format":"png","text":"iVBORw0KGgo…"}
 {"type":"ping","sentAtMs":0}
 {"type":"pong","sentAtMs":0}
 {"type":"displays","displays":[{"id":"windows-id","name":"DELL S2725QS","x":0,"y":0,"width":3840,"height":2160,"widthMm":597,"heightMm":336,"primary":true}]}
@@ -114,7 +115,12 @@ over 16 KiB is sent as ordered `clipboard_part` messages of at most 16 KiB
 previous one has been written so input keeps flowing between parts. The
 receiver joins them once all `count` parts of an `id` arrive; a gap, a new
 `id`, or a total over the limit discards the partial text. A single
-`clipboard` message stays at or under 1 MiB.  Mouse
+`clipboard` message stays at or under 1 MiB.
+
+Images travel only as `clipboard_part` messages with `"format":"png"`; the
+joined `text` is base64 of the PNG bytes and the 10 MiB limit applies to the
+decoded image. `format` defaults to `"text"`. When a copy offers both text and
+an image, text is sent; copied files are never sent.  Mouse
 motion may be coalesced; buttons, key transitions, mode transitions, and
 `release_all` are ordered and never discarded.
 

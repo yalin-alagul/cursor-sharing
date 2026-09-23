@@ -357,8 +357,8 @@ struct ConnectionPage: View {
                 Text("Enter the same code in SideCursor on Windows. It's kept in your Keychain.")
             }
 
-            Section("Clipboard") {
-                Toggle("Share copied text with Windows", isOn: model.binding(\.clipboardEnabled))
+            Section {
+                Toggle("Share copied text and images with Windows", isOn: model.binding(\.clipboardEnabled))
                     .toggleStyle(.switch)
                 Picker("Largest item", selection: model.binding(\.clipboardMaximumBytes)) {
                     ForEach(
@@ -369,6 +369,10 @@ struct ConnectionPage: View {
                     }
                 }
                 .disabled(!configuration.clipboardEnabled)
+            } header: {
+                Text("Clipboard")
+            } footer: {
+                Text("Images travel as PNG. Copied files stay on the computer they were copied on.")
             }
         }
         .formStyle(.grouped)

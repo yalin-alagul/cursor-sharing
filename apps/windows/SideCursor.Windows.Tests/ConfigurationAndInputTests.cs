@@ -105,26 +105,63 @@ public sealed class ConfigurationAndInputTests
 
         var assembler = new ClipboardAssembler();
         var id = Guid.NewGuid().ToString("D");
-        string? result = null;
+        (string Format, string Payload)? result = null;
         for (var index = 0; index < parts.Count; index++)
         {
-            result = assembler.Add(id, index, parts.Count, parts[index], V2Protocol.MaximumClipboardBytes, V2Protocol.MaximumClipboardParts);
+            result = assembler.Add(id, index, parts.Count, "text", parts[index], V2Protocol.MaximumClipboardBytes, V2Protocol.MaximumClipboardParts);
         }
 
-        Assert.Equal(text, result);
+        Assert.Equal(("text", text), result);
+    }
+
+    [Fact]
+    public void ImageTravelsAsBase64PartsAndDecodesBackToTheSamePixels()
+    {
+        var pixels = new byte[64 * 48 * 4];
+        new Random(7).NextBytes(pixels);
+        var source = System.Windows.Media.Imaging.BitmapSource.Create(
+            64, 48, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, pixels, 64 * 4);
+        var png = ClipboardImages.ToPng(source);
+
+        var parts = ClipboardParts.Split(Convert.ToBase64String(png), V2Protocol.ClipboardPartBytes);
+        var assembler = new ClipboardAssembler();
+        (string Format, string Payload)? result = null;
+        for (var index = 0; index < parts.Count; index++)
+        {
+            result = assembler.Add("img", index, parts.Count, "png", parts[index], png.Length, V2Protocol.MaximumClipboardParts);
+        }
+
+        Assert.Equal("png", result!.Value.Format);
+        var decoded = ClipboardImages.FromPng(Convert.FromBase64String(result.Value.Payload));
+        Assert.Equal(64, decoded.PixelWidth);
+        var roundTrip = new byte[pixels.Length];
+        new System.Windows.Media.Imaging.FormatConvertedBitmap(decoded, System.Windows.Media.PixelFormats.Bgra32, null, 0)
+            .CopyPixels(roundTrip, 64 * 4, 0);
+        Assert.Equal(pixels, roundTrip);
+
+        // Clipboard padding after IEND must not change what is compared or sent.
+        Assert.Equal(png, ClipboardImages.TrimToPngEnd([.. png, 0, 0, 0, 0]));
+    }
+
+    [Fact]
+    public void ClipboardTransferMustKeepOneFormat()
+    {
+        var assembler = new ClipboardAssembler();
+        Assert.Null(assembler.Add("x", 0, 2, "png", "iVBO", 100, 10));
+        Assert.Null(assembler.Add("x", 1, 2, "text", "Rw==", 100, 10));
     }
 
     [Fact]
     public void ClipboardAssemblerDropsSupersededAndOversizedTransfers()
     {
         var assembler = new ClipboardAssembler();
-        Assert.Null(assembler.Add("a", 0, 2, "old ", 100, 10));
-        Assert.Null(assembler.Add("b", 0, 2, "new ", 100, 10));
-        Assert.Null(assembler.Add("a", 1, 2, "tail", 100, 10));
-        Assert.Null(assembler.Add("b", 1, 2, "text", 100, 10));
+        Assert.Null(assembler.Add("a", 0, 2, "text", "old ", 100, 10));
+        Assert.Null(assembler.Add("b", 0, 2, "text", "new ", 100, 10));
+        Assert.Null(assembler.Add("a", 1, 2, "text", "tail", 100, 10));
+        Assert.Equal(("text", "new text"), assembler.Add("b", 1, 2, "text", "text", 100, 10));
 
-        Assert.Null(assembler.Add("c", 0, 2, "12345", 8, 10));
-        Assert.Null(assembler.Add("c", 1, 2, "67890", 8, 10));
+        Assert.Null(assembler.Add("c", 0, 2, "text", "12345", 8, 10));
+        Assert.Null(assembler.Add("c", 1, 2, "text", "67890", 8, 10));
     }
 
     [Fact]

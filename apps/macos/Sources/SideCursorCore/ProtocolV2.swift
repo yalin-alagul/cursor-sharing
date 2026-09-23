@@ -18,20 +18,30 @@ public enum ProtocolV2 {
     public static let maximumClipboardParts = 1024
 }
 
-/// One slice of a large clipboard text. Parts arrive in order on the
+/// What a clipboard transfer's joined payload is: text itself, or base64
+/// of PNG image bytes.
+public enum ClipboardFormat: String, Codable, Equatable {
+    case text
+    case png
+}
+
+/// One slice of a large clipboard transfer. Parts arrive in order on the
 /// encrypted stream and are joined once all `count` have arrived.
 public struct ClipboardPart: Equatable {
     public let origin: String
     public let id: UUID
     public let index: Int
     public let count: Int
+    public let format: ClipboardFormat
+    /// A slice of the payload: text, or base64 for `.png`.
     public let text: String
 
-    public init(origin: String, id: UUID, index: Int, count: Int, text: String) {
+    public init(origin: String, id: UUID, index: Int, count: Int, format: ClipboardFormat = .text, text: String) {
         self.origin = origin
         self.id = id
         self.index = index
         self.count = count
+        self.format = format
         self.text = text
     }
 }
@@ -67,20 +77,25 @@ public enum ClipboardParts {
 public struct ClipboardAssembler {
     private var id: UUID?
     private var count = 0
+    private var format = ClipboardFormat.text
     private var parts: [String] = []
     private var bytes = 0
 
     public init() {}
 
-    public mutating func add(_ part: ClipboardPart, maximumBytes: Int) -> String? {
+    /// `maximumBytes` limits the text, or the decoded image for `.png`.
+    public mutating func add(_ part: ClipboardPart, maximumBytes: Int) -> ClipboardContent? {
         if part.index == 0 {
             id = part.id
             count = part.count
+            format = part.format
             parts = []
             bytes = 0
         }
-        guard part.id == id,
-              part.count == count,
+        // A leftover part of an older, replaced transfer: ignore it.
+        guard part.id == id else { return nil }
+        guard part.count == count,
+              part.format == format,
               part.count <= ProtocolV2.maximumClipboardParts,
               part.index == parts.count
         else {
@@ -88,20 +103,29 @@ public struct ClipboardAssembler {
             return nil
         }
         bytes += part.text.utf8.count
-        guard bytes <= maximumBytes else {
+        let payloadLimit = format == .png ? (maximumBytes + 2) / 3 * 4 : maximumBytes
+        guard bytes <= payloadLimit else {
             reset()
             return nil
         }
         parts.append(part.text)
         guard parts.count == count else { return nil }
-        let text = parts.joined()
+        let payload = parts.joined()
+        let completed = format
         reset()
-        return text
+        switch completed {
+        case .text:
+            return .text(payload)
+        case .png:
+            guard let data = Data(base64Encoded: payload), data.count <= maximumBytes else { return nil }
+            return .png(data)
+        }
     }
 
     public mutating func reset() {
         id = nil
         count = 0
+        format = .text
         parts = []
         bytes = 0
     }
@@ -338,6 +362,7 @@ extension ProtocolMessage: Codable {
         case zones
         case index
         case count
+        case format
     }
 
     public init(from decoder: Decoder) throws {
@@ -393,6 +418,7 @@ extension ProtocolMessage: Codable {
                 id: try container.decode(UUID.self, forKey: .id),
                 index: try container.decode(Int.self, forKey: .index),
                 count: try container.decode(Int.self, forKey: .count),
+                format: try container.decodeIfPresent(ClipboardFormat.self, forKey: .format) ?? .text,
                 text: try container.decode(String.self, forKey: .text)
             ))
         default:
@@ -462,6 +488,9 @@ extension ProtocolMessage: Codable {
             try container.encode(part.id, forKey: .id)
             try container.encode(part.index, forKey: .index)
             try container.encode(part.count, forKey: .count)
+            if part.format != .text {
+                try container.encode(part.format, forKey: .format)
+            }
             try container.encode(part.text, forKey: .text)
         }
     }

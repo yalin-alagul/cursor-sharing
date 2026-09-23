@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CryptoKit
 import Foundation
@@ -148,25 +149,132 @@ final class NativeRecoveryTests: XCTestCase {
 
         var assembler = ClipboardAssembler()
         let id = UUID()
-        var result: String?
+        var result: ClipboardContent?
         for (index, part) in parts.enumerated() {
             result = assembler.add(
                 ClipboardPart(origin: "mac", id: id, index: index, count: parts.count, text: part),
                 maximumBytes: ProtocolV2.maximumClipboardBytes
             )
         }
-        XCTAssertEqual(result, text)
+        XCTAssertEqual(result, .text(text))
+    }
+
+    func testImageTravelsAsBase64PartsAndDecodesToTheSamePNG() throws {
+        let png = try samplePNG(width: 400, height: 300)
+        let parts = ClipboardParts.split(png.base64EncodedString(), maximumBytes: ProtocolV2.clipboardPartBytes)
+        var assembler = ClipboardAssembler()
+        let id = UUID()
+        var result: ClipboardContent?
+        for (index, part) in parts.enumerated() {
+            result = assembler.add(
+                ClipboardPart(origin: "mac", id: id, index: index, count: parts.count, format: .png, text: part),
+                maximumBytes: png.count
+            )
+        }
+        XCTAssertEqual(result, .png(png))
+
+        // A mixed-format transfer is broken and never lands.
+        var mixed = ClipboardAssembler()
+        XCTAssertNil(mixed.add(ClipboardPart(origin: "w", id: id, index: 0, count: 2, format: .png, text: "iVBO"), maximumBytes: 100))
+        XCTAssertNil(mixed.add(ClipboardPart(origin: "w", id: id, index: 1, count: 2, format: .text, text: "Rw=="), maximumBytes: 100))
+
+        let encoded = try JSONEncoder().encode(ProtocolMessage.clipboardPart(ClipboardPart(origin: "m", id: id, index: 0, count: 1, format: .png, text: "iVBORw==")))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["format"] as? String, "png")
+    }
+
+    func testRemoteImageLandsOnThePasteboardAsPNGWithoutEcho() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidecursor-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        // Polled by hand below: a test runner's timers can lag by seconds.
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, pollInterval: 3600)
+        var forwarded: [ClipboardContent] = []
+        monitor.start { forwarded.append($0) }
+        defer { monitor.stop() }
+
+        let png = try samplePNG(width: 64, height: 48)
+        monitor.applyRemote(.png(png))
+        monitor.poll()
+
+        XCTAssertEqual(pasteboard.data(forType: .png), png)
+        XCTAssertEqual(NSImage(pasteboard: pasteboard)?.representations.first?.pixelsWide, 64, "apps reading NSImage get it")
+        XCTAssertTrue(forwarded.isEmpty, "a remote image must not bounce back")
+    }
+
+    func testLocalTIFFOnlyImageIsForwardedAsPNG() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidecursor-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        // Polled by hand below: a test runner's timers can lag by seconds.
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, pollInterval: 3600)
+        var forwarded: [ClipboardContent] = []
+        monitor.start { forwarded.append($0) }
+        defer { monitor.stop() }
+
+        let tiff = try XCTUnwrap(NSBitmapImageRep(data: try samplePNG(width: 32, height: 20))?.tiffRepresentation)
+        pasteboard.clearContents()
+        pasteboard.setData(tiff, forType: .tiff)
+        monitor.poll()
+        // Converting happens off the main thread, then lands on main.
+        let deadline = Date().addingTimeInterval(10)
+        while forwarded.isEmpty, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        guard case let .png(png)? = forwarded.first else { return XCTFail("expected a PNG, got \(forwarded)") }
+        XCTAssertEqual(NSBitmapImageRep(data: png)?.pixelsWide, 32)
+    }
+
+    func testCopiedFilesAreNotSentAsTheirIconImage() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidecursor-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        // Polled by hand below: a test runner's timers can lag by seconds.
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, pollInterval: 3600)
+        var forwarded: [ClipboardContent] = []
+        monitor.start { forwarded.append($0) }
+        defer { monitor.stop() }
+
+        let item = NSPasteboardItem()
+        item.setString(URL(fileURLWithPath: "/tmp/example.txt").absoluteString, forType: .fileURL)
+        item.setData(try samplePNG(width: 16, height: 16), forType: .png)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+        monitor.poll()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        XCTAssertTrue(forwarded.isEmpty)
+    }
+
+    /// A gradient with noise, so the PNG is big enough to need several parts.
+    private func samplePNG(width: Int, height: Int) throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let gradient = try XCTUnwrap(CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: [CGColor(red: 1, green: 0.4, blue: 0.2, alpha: 1), CGColor(red: 0.2, green: 0.3, blue: 1, alpha: 1)] as CFArray,
+            locations: nil
+        ))
+        context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: height), options: [])
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<(width * height / 8) {
+            context.setFillColor(CGColor(gray: .random(in: 0...1, using: &generator), alpha: 1))
+            context.fill(CGRect(x: Int.random(in: 0..<width, using: &generator), y: Int.random(in: 0..<height, using: &generator), width: 1, height: 1))
+        }
+        let image = try XCTUnwrap(context.makeImage())
+        return try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
     }
 
     func testClipboardAssemblerDropsSupersededOrOversizedTransfers() {
         var assembler = ClipboardAssembler()
         let first = UUID()
+        func text(_ value: String) -> ClipboardContent { .text(value) }
         let second = UUID()
         XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: first, index: 0, count: 2, text: "old "), maximumBytes: 100))
         // A new copy starts before the old one finished: only the new one lands.
         XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: second, index: 0, count: 2, text: "new "), maximumBytes: 100))
         XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: first, index: 1, count: 2, text: "tail"), maximumBytes: 100))
-        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: second, index: 1, count: 2, text: "text"), maximumBytes: 100))
+        XCTAssertEqual(assembler.add(ClipboardPart(origin: "w", id: second, index: 1, count: 2, text: "text"), maximumBytes: 100), text("new text"))
 
         let third = UUID()
         XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: third, index: 0, count: 2, text: "12345"), maximumBytes: 8))

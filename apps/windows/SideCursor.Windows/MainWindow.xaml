@@ -346,8 +346,8 @@
                 <ColumnDefinition Width="Auto" />
               </Grid.ColumnDefinitions>
               <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
-                <TextBlock Text="Share clipboard text" />
-                <TextBlock Style="{StaticResource Caption}" Text="Copied text moves between the Mac and this PC. Files and images stay put." />
+                <TextBlock Text="Share clipboard" />
+                <TextBlock Style="{StaticResource Caption}" Text="Copied text and images move between the Mac and this PC. Copied files stay put." />
               </StackPanel>
               <CheckBox x:Name="ClipboardEnabledCheck" Grid.Column="1" VerticalAlignment="Center" />
             </Grid>

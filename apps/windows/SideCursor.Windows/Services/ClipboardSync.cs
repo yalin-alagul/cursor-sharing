@@ -27,6 +27,8 @@ public sealed class ClipboardSync : IDisposable
     }
 
     public event EventHandler<string>? LocalTextChanged;
+    /// <summary>A copied image, as PNG bytes.</summary>
+    public event EventHandler<byte[]>? LocalImageChanged;
     public event EventHandler<string>? ClipboardError;
 
     public void Start()
@@ -97,6 +99,48 @@ public sealed class ClipboardSync : IDisposable
         }
     }
 
+    public void ApplyRemoteImage(byte[] png)
+    {
+        ArgumentNullException.ThrowIfNull(png);
+        if (!_dispatcher.CheckAccess())
+        {
+            _dispatcher.BeginInvoke(() => ApplyRemoteImage(png));
+            return;
+        }
+
+        VerifyDispatcher();
+        if (png.Length == 0 || png.Length > Math.Clamp(_maximumBytes(), 1, SideCursorConfig.MaximumClipboardBytes))
+        {
+            return;
+        }
+
+        try
+        {
+            var bitmap = ClipboardImages.FromPng(png);
+            var hash = Hash("png", png);
+            _suppressedRemoteHash = hash;
+            _suppressUntil = DateTimeOffset.UtcNow.AddSeconds(2);
+            // A bitmap for every app, plus PNG for apps that keep transparency.
+            var data = new DataObject();
+            data.SetImage(bitmap);
+            data.SetData("PNG", new MemoryStream(png), autoConvert: false);
+            Clipboard.SetDataObject(data, copy: true);
+            _lastPublishedHash = hash;
+        }
+        catch (Exception exception) when (exception is NotSupportedException or FileFormatException or ArgumentException)
+        {
+            ClipboardError?.Invoke(this, $"An image from the Mac could not be read: {exception.Message}");
+        }
+        catch (COMException exception)
+        {
+            ClipboardError?.Invoke(this, $"Windows clipboard is busy: {exception.Message}");
+        }
+        catch (ExternalException exception)
+        {
+            ClipboardError?.Invoke(this, $"Windows clipboard could not be updated: {exception.Message}");
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -135,25 +179,87 @@ public sealed class ClipboardSync : IDisposable
     private void PublishLocalClipboardIfChanged()
     {
         VerifyDispatcher();
-        if (_disposed || !TryGetText(out var text) || !CanSync(text))
+        if (_disposed)
         {
             return;
         }
 
-        var hash = Hash(text);
+        // Text wins when a copy offers both (spreadsheet cells, rich text).
+        if (TryGetText(out var text))
+        {
+            if (CanSync(text) && ShouldPublish(Hash(text)))
+            {
+                LocalTextChanged?.Invoke(this, text);
+            }
+
+            return;
+        }
+
+        if (TryGetImage(out var png)
+            && png.Length <= Math.Clamp(_maximumBytes(), 1, SideCursorConfig.MaximumClipboardBytes)
+            && ShouldPublish(Hash("png", png)))
+        {
+            LocalImageChanged?.Invoke(this, png);
+        }
+    }
+
+    private bool ShouldPublish(string hash)
+    {
         if (string.Equals(hash, _suppressedRemoteHash, StringComparison.Ordinal) && DateTimeOffset.UtcNow <= _suppressUntil)
         {
             _lastPublishedHash = hash;
-            return;
+            return false;
         }
 
         if (string.Equals(hash, _lastPublishedHash, StringComparison.Ordinal))
         {
-            return;
+            return false;
         }
 
         _lastPublishedHash = hash;
-        LocalTextChanged?.Invoke(this, text);
+        return true;
+    }
+
+    private bool TryGetImage(out byte[] png)
+    {
+        png = [];
+        try
+        {
+            // A copied file carries its icon; files are not shared.
+            if (Clipboard.ContainsFileDropList())
+            {
+                return false;
+            }
+
+            if (Clipboard.GetData("PNG") is MemoryStream stream)
+            {
+                png = ClipboardImages.TrimToPngEnd(stream.ToArray());
+                return png.Length > 0;
+            }
+
+            if (!Clipboard.ContainsImage() || Clipboard.GetImage() is not { } image)
+            {
+                return false;
+            }
+
+            png = ClipboardImages.ToPng(image);
+            return true;
+        }
+        catch (COMException exception)
+        {
+            ClipboardError?.Invoke(this, $"Windows clipboard is busy: {exception.Message}");
+            return false;
+        }
+        catch (ExternalException exception)
+        {
+            ClipboardError?.Invoke(this, $"Windows clipboard could not be read: {exception.Message}");
+            return false;
+        }
+        catch (Exception exception) when (exception is NotSupportedException or InvalidOperationException or ArgumentException)
+        {
+            ClipboardError?.Invoke(this, $"The copied image could not be read: {exception.Message}");
+            return false;
+        }
     }
 
     private bool TryGetText(out string text)
@@ -189,6 +295,12 @@ public sealed class ClipboardSync : IDisposable
     private static string Hash(string text)
     {
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+    }
+
+    /// <summary>Tagged so an image never matches text with the same bytes.</summary>
+    private static string Hash(string tag, byte[] data)
+    {
+        return tag + ":" + Convert.ToHexString(SHA256.HashData(ClipboardImages.TrimToPngEnd(data)));
     }
 
     private void VerifyDispatcher()
