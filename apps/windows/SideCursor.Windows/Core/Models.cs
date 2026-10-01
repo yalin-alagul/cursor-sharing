@@ -22,8 +22,8 @@ public enum SessionState
 
 public sealed class SideCursorConfig
 {
-    public const int CurrentSchemaVersion = 1;
-    public const int MaximumClipboardBytes = 1024 * 1024;
+    public const int CurrentSchemaVersion = 2;
+    public const int MaximumClipboardBytes = 10 * 1024 * 1024;
 
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public string DeviceId { get; set; } = Guid.NewGuid().ToString("D");
@@ -51,6 +51,13 @@ public sealed class SideCursorConfig
 
     public void Normalize()
     {
+        // Version 1 capped the clipboard at 1 MiB (also its default); lift
+        // that old ceiling to the new 10 MiB maximum once.
+        if (SchemaVersion < 2 && ClipboardMaximumBytes == 1024 * 1024)
+        {
+            ClipboardMaximumBytes = MaximumClipboardBytes;
+        }
+
         SchemaVersion = CurrentSchemaVersion;
         if (!Guid.TryParse(DeviceId, out _))
         {
@@ -98,6 +105,8 @@ public sealed class CommandBindings
     }
 }
 
+/// <param name="WidthMm">Physical width from the monitor's EDID, oriented like
+/// <paramref name="Bounds"/>; zero when the monitor does not report it.</param>
 public sealed record DisplayDescriptor(
     string StableId,
     string DeviceName,
@@ -105,7 +114,9 @@ public sealed record DisplayDescriptor(
     PixelBounds Bounds,
     uint DpiX,
     uint DpiY,
-    bool IsPrimary)
+    bool IsPrimary,
+    double WidthMm = 0,
+    double HeightMm = 0)
 {
     public string Label => $"{FriendlyName} — {Bounds.Width}×{Bounds.Height} at ({Bounds.Left}, {Bounds.Top})";
 }
@@ -154,6 +165,43 @@ public sealed class RelativeMotionMapper
         _scaleY = target.Height / (double)sourceHeight * sanitizedCalibration;
         _remainderX = 0;
         _remainderY = 0;
+    }
+
+    public double ScaleX => _scaleX;
+    public double ScaleY => _scaleY;
+
+    /// <summary>
+    /// Switches to another display's scale mid-session, keeping the sub-pixel
+    /// remainder so the change is seamless.
+    /// </summary>
+    public void SetScale(double scaleX, double scaleY)
+    {
+        if (!double.IsFinite(scaleX) || !double.IsFinite(scaleY) || scaleX <= 0 || scaleY <= 0)
+        {
+            return;
+        }
+
+        _scaleX = Math.Clamp(scaleX, 0.05, 20);
+        _scaleY = Math.Clamp(scaleY, 0.05, 20);
+    }
+
+    /// <summary>
+    /// Scale that moves the Windows pointer the same physical distance the
+    /// Mac pointer would have moved: target pixels per millimetre over
+    /// source points per millimetre. Null when either size is unknown.
+    /// </summary>
+    public static (double X, double Y)? PhysicalScale(
+        double sourceUnitsPerMmX,
+        double sourceUnitsPerMmY,
+        PixelBounds target,
+        DisplaySizeMm targetSize)
+    {
+        if (sourceUnitsPerMmX <= 0 || sourceUnitsPerMmY <= 0 || !target.IsUsable || !targetSize.IsUsable)
+        {
+            return null;
+        }
+
+        return (target.Width / targetSize.Width / sourceUnitsPerMmX, target.Height / targetSize.Height / sourceUnitsPerMmY);
     }
 
     public PixelPoint Translate(double sourceDx, double sourceDy)
@@ -339,5 +387,314 @@ public sealed class HotkeyChord
         }
 
         return $"0x{key:X2}";
+    }
+}
+
+public enum ScreenEdge
+{
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+public static class ScreenEdges
+{
+    public static bool TryParse(string? value, out ScreenEdge edge)
+    {
+        switch (value)
+        {
+            case "left": edge = ScreenEdge.Left; return true;
+            case "right": edge = ScreenEdge.Right; return true;
+            case "top": edge = ScreenEdge.Top; return true;
+            case "bottom": edge = ScreenEdge.Bottom; return true;
+            default: edge = default; return false;
+        }
+    }
+
+    public static string ToWire(this ScreenEdge edge) => edge switch
+    {
+        ScreenEdge.Left => "left",
+        ScreenEdge.Right => "right",
+        ScreenEdge.Top => "top",
+        _ => "bottom",
+    };
+
+    /// <summary>Left and right edges run along y; top and bottom along x.</summary>
+    public static bool RunsAlongY(this ScreenEdge edge) => edge is ScreenEdge.Left or ScreenEdge.Right;
+}
+
+/// <summary>Where the pointer reappears on the Mac, in Quartz points.</summary>
+public sealed record MacReturnPoint(string Display, ScreenEdge Edge, double X, double Y);
+
+public sealed record MacZoneSide(string Display, ScreenEdge Edge, double Line, double Start, double End);
+
+/// <summary>
+/// A stretch of a Windows display edge that physically touches a Mac display,
+/// computed by the Mac from the user's layout. Leaving the Windows display
+/// through [Start, End) along <see cref="Edge"/> returns to the Mac; the rest of
+/// an outer edge is a wall. Along-edge ranges map linearly start-to-start.
+/// </summary>
+public sealed record ReturnZone(string Display, ScreenEdge Edge, double Line, double Start, double End, MacZoneSide Mac)
+{
+    public bool Covers(string displayId, ScreenEdge edge, double along) =>
+        edge == Edge && along >= Start && along < End && string.Equals(displayId, Display, StringComparison.OrdinalIgnoreCase);
+
+    public MacReturnPoint MacPointFor(double along)
+    {
+        var fraction = End > Start ? (along - Start) / (End - Start) : 0;
+        var macAlong = Mac.Start + Math.Clamp(fraction, 0, 1) * (Mac.End - Mac.Start);
+        return Mac.Edge.RunsAlongY()
+            ? new MacReturnPoint(Mac.Display, Mac.Edge, Mac.Line, macAlong)
+            : new MacReturnPoint(Mac.Display, Mac.Edge, macAlong, Mac.Line);
+    }
+}
+
+public readonly record struct DisplaySizeMm(double Width, double Height)
+{
+    public bool IsUsable => double.IsFinite(Width) && double.IsFinite(Height) && Width >= 20 && Height >= 20;
+}
+
+/// <summary>The Mac's view of the layout: corrected display sizes and return zones.</summary>
+public sealed record LayoutUpdate(IReadOnlyDictionary<string, DisplaySizeMm> Sizes, IReadOnlyList<ReturnZone> Zones)
+{
+    public static LayoutUpdate Empty { get; } = new(new Dictionary<string, DisplaySizeMm>(), []);
+}
+
+internal readonly record struct DesktopPointerPlan(PixelPoint? MoveTo, ReturnZone? Zone, MacReturnPoint? MacPoint);
+
+/// <summary>
+/// Moves the pointer across every Windows display. A move that lands on any
+/// display is taken as is, so crossing between Windows monitors works as
+/// usual. A move that would leave the desktop is clamped to the display it
+/// left, and returns to the Mac only when it leaves through a return zone.
+/// </summary>
+internal static class DesktopPointerPlanner
+{
+    public static DisplayDescriptor? DisplayAt(PixelPoint point, IReadOnlyList<DisplayDescriptor> displays)
+    {
+        foreach (var display in displays)
+        {
+            if (display.Bounds.Contains(point))
+            {
+                return display;
+            }
+        }
+
+        return null;
+    }
+
+    public static DisplayDescriptor? Nearest(PixelPoint point, IReadOnlyList<DisplayDescriptor> displays)
+    {
+        DisplayDescriptor? nearest = null;
+        var best = long.MaxValue;
+        foreach (var display in displays)
+        {
+            var clamped = Clamp(point, display.Bounds);
+            var dx = (long)clamped.X - point.X;
+            var dy = (long)clamped.Y - point.Y;
+            var distance = dx * dx + dy * dy;
+            if (distance < best)
+            {
+                best = distance;
+                nearest = display;
+            }
+        }
+
+        return nearest;
+    }
+
+    public static PixelPoint Clamp(PixelPoint point, PixelBounds bounds) => new(
+        Math.Clamp(point.X, bounds.Left, bounds.Right - 1),
+        Math.Clamp(point.Y, bounds.Top, bounds.Bottom - 1));
+
+    public static DesktopPointerPlan Plan(
+        PixelPoint current,
+        PixelPoint delta,
+        IReadOnlyList<DisplayDescriptor> displays,
+        IReadOnlyList<ReturnZone> zones)
+    {
+        if (displays.Count == 0 || (delta.X == 0 && delta.Y == 0))
+        {
+            return default;
+        }
+
+        var next = new PixelPoint(current.X + delta.X, current.Y + delta.Y);
+        if (DisplayAt(next, displays) is not null)
+        {
+            return new DesktopPointerPlan(next, null, null);
+        }
+
+        var from = DisplayAt(current, displays) ?? Nearest(current, displays)!;
+        var bounds = from.Bounds;
+        var clamped = Clamp(next, bounds);
+        // The edge the move pushes furthest past decides where it leaves.
+        var overshoots = new (ScreenEdge Edge, long Distance)[]
+        {
+            (ScreenEdge.Left, (long)bounds.Left - next.X),
+            (ScreenEdge.Right, (long)next.X - (bounds.Right - 1)),
+            (ScreenEdge.Top, (long)bounds.Top - next.Y),
+            (ScreenEdge.Bottom, (long)next.Y - (bounds.Bottom - 1)),
+        };
+        var exit = overshoots.MaxBy(static candidate => candidate.Distance);
+        if (exit.Distance > 0)
+        {
+            var along = exit.Edge.RunsAlongY() ? clamped.Y : clamped.X;
+            foreach (var zone in zones)
+            {
+                if (zone.Covers(from.StableId, exit.Edge, along))
+                {
+                    return new DesktopPointerPlan(clamped, zone, zone.MacPointFor(along));
+                }
+            }
+        }
+
+        return clamped == current ? default : new DesktopPointerPlan(clamped, null, null);
+    }
+}
+
+/// <summary>
+/// Splits a large clipboard text into clipboard_part slices of at most a given
+/// number of UTF-8 bytes, never between the halves of a surrogate pair.
+/// </summary>
+public static class ClipboardParts
+{
+    public static IReadOnlyList<string> Split(string text, int maximumBytes)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (System.Text.Encoding.UTF8.GetByteCount(text) <= maximumBytes)
+        {
+            return [text];
+        }
+
+        var parts = new List<string>();
+        var start = 0;
+        var bytes = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            var width = char.IsHighSurrogate(text[index]) && index + 1 < text.Length && char.IsLowSurrogate(text[index + 1]) ? 2 : 1;
+            var size = System.Text.Encoding.UTF8.GetByteCount(text.AsSpan(index, width));
+            if (bytes + size > maximumBytes && index > start)
+            {
+                parts.Add(text[start..index]);
+                start = index;
+                bytes = 0;
+            }
+
+            bytes += size;
+            index += width - 1;
+        }
+
+        parts.Add(text[start..]);
+        return parts;
+    }
+}
+
+/// <summary>
+/// Reassembles clipboard_part messages. Parts arrive in order on the encrypted
+/// stream; a gap, a new transfer, or a total over the limit discards the
+/// partial text so it never reaches the clipboard.
+/// </summary>
+public sealed class ClipboardAssembler
+{
+    public const string TextFormat = "text";
+    public const string PngFormat = "png";
+
+    private readonly List<string> _parts = [];
+    private string? _id;
+    private string _format = TextFormat;
+    private int _count;
+    private long _bytes;
+
+    /// <param name="format">"text", or "png" when the payload is base64 of PNG bytes.</param>
+    /// <param name="maximumBytes">Limit on the text, or on the decoded image for "png".</param>
+    public (string Format, string Payload)? Add(string id, int index, int count, string format, string text, int maximumBytes, int maximumParts)
+    {
+        if (index == 0)
+        {
+            Reset();
+            _id = id;
+            _count = count;
+            _format = format;
+        }
+
+        if (!string.Equals(id, _id, StringComparison.OrdinalIgnoreCase))
+        {
+            // A leftover part of an older, replaced transfer: ignore it.
+            return null;
+        }
+
+        if (count != _count || format != _format || count > maximumParts || index != _parts.Count)
+        {
+            Reset();
+            return null;
+        }
+
+        _bytes += System.Text.Encoding.UTF8.GetByteCount(text);
+        var limit = _format == PngFormat ? ((long)maximumBytes + 2) / 3 * 4 : maximumBytes;
+        if (_bytes > limit)
+        {
+            Reset();
+            return null;
+        }
+
+        _parts.Add(text);
+        if (_parts.Count < _count)
+        {
+            return null;
+        }
+
+        var complete = (_format, string.Concat(_parts));
+        Reset();
+        return complete;
+    }
+
+    public void Reset()
+    {
+        _parts.Clear();
+        _id = null;
+        _format = TextFormat;
+        _count = 0;
+        _bytes = 0;
+    }
+}
+
+/// <summary>PNG helpers for clipboard images.</summary>
+public static class ClipboardImages
+{
+    private static readonly byte[] EndChunk = "IEND"u8.ToArray();
+
+    /// <summary>
+    /// Clipboard memory can be padded past the end of the PNG. Trims to the
+    /// IEND chunk (plus its CRC) so the same image always hashes the same.
+    /// </summary>
+    public static byte[] TrimToPngEnd(byte[] data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var index = data.AsSpan().LastIndexOf(EndChunk);
+        return index >= 0 && index + 8 < data.Length ? data[..(index + 8)] : data;
+    }
+
+    public static byte[] ToPng(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return stream.ToArray();
+    }
+
+    public static System.Windows.Media.Imaging.BitmapSource FromPng(byte[] png)
+    {
+        ArgumentNullException.ThrowIfNull(png);
+        using var stream = new MemoryStream(png);
+        var decoder = new System.Windows.Media.Imaging.PngBitmapDecoder(
+            stream,
+            System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+            System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+        var frame = decoder.Frames[0];
+        frame.Freeze();
+        return frame;
     }
 }

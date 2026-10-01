@@ -29,7 +29,13 @@ public static class V2Protocol
     public const int AeadTagBytes = 16;
     public const int MaximumHandshakeBytes = 16 * 1024;
     public const int MaximumEncryptedFrameBytes = 2 * 1024 * 1024;
-    public const int MaximumClipboardBytes = 1024 * 1024;
+    /// <summary>Largest clipboard text shared, in UTF-8 bytes (10 MiB).</summary>
+    public const int MaximumClipboardBytes = 10 * 1024 * 1024;
+    /// <summary>Largest text sent as one clipboard message; bigger texts go as clipboard_part messages.</summary>
+    public const int MaximumClipboardMessageBytes = 1024 * 1024;
+    /// <summary>Size of each clipboard_part, small enough that other traffic interleaves.</summary>
+    public const int ClipboardPartBytes = 16 * 1024;
+    public const int MaximumClipboardParts = 1024;
     public static readonly byte[] HkdfInfoPrefix = Encoding.UTF8.GetBytes("SideCursor/v2");
 
     public static void ValidatePairingSecret(ReadOnlySpan<byte> pairingSecret)

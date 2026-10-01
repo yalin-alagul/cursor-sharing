@@ -4,6 +4,8 @@
 <dict>
   <key>CFBundleDisplayName</key>
   <string>SideCursor</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleExecutable</key>
   <string>SideCursorMac</string>
   <key>CFBundleIdentifier</key>
@@ -14,6 +16,8 @@
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
   <string>1.0.0</string>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 Yalin Alagul. Free for noncommercial use.</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSHighResolutionCapable</key>

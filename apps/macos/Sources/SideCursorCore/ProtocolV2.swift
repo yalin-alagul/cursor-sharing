@@ -6,7 +6,129 @@ public enum ProtocolV2 {
     public static let version = 2
     public static let maximumHandshakeBytes = 16 * 1024
     public static let maximumFrameBytes = 2 * 1024 * 1024
-    public static let maximumClipboardBytes = 1_048_576
+    /// Largest clipboard text shared, in UTF-8 bytes (10 MiB).
+    public static let maximumClipboardBytes = 10 * 1_048_576
+    /// Largest text sent as one `clipboard` message. Anything bigger goes
+    /// as `clipboard_part` messages so it never approaches the frame limit.
+    public static let maximumClipboardMessageBytes = 1_048_576
+    /// Size of each `clipboard_part`. Small parts let pointer input slip in
+    /// between them, so a large paste never stalls the pointer, even over
+    /// Bluetooth.
+    public static let clipboardPartBytes = 16 * 1024
+    public static let maximumClipboardParts = 1024
+}
+
+/// What a clipboard transfer's joined payload is: text itself, or base64
+/// of PNG image bytes.
+public enum ClipboardFormat: String, Codable, Equatable {
+    case text
+    case png
+}
+
+/// One slice of a large clipboard transfer. Parts arrive in order on the
+/// encrypted stream and are joined once all `count` have arrived.
+public struct ClipboardPart: Equatable {
+    public let origin: String
+    public let id: UUID
+    public let index: Int
+    public let count: Int
+    public let format: ClipboardFormat
+    /// A slice of the payload: text, or base64 for `.png`.
+    public let text: String
+
+    public init(origin: String, id: UUID, index: Int, count: Int, format: ClipboardFormat = .text, text: String) {
+        self.origin = origin
+        self.id = id
+        self.index = index
+        self.count = count
+        self.format = format
+        self.text = text
+    }
+}
+
+public enum ClipboardParts {
+    /// Splits text into pieces of at most `maximumBytes` UTF-8 bytes, only
+    /// at Unicode scalar boundaries so every piece is valid text.
+    public static func split(_ text: String, maximumBytes: Int) -> [String] {
+        guard text.utf8.count > maximumBytes else { return [text] }
+        var parts: [String] = []
+        var current = String.UnicodeScalarView()
+        var currentBytes = 0
+        for scalar in text.unicodeScalars {
+            let size = String(scalar).utf8.count
+            if currentBytes + size > maximumBytes, !current.isEmpty {
+                parts.append(String(current))
+                current = String.UnicodeScalarView()
+                currentBytes = 0
+            }
+            current.append(scalar)
+            currentBytes += size
+        }
+        if !current.isEmpty {
+            parts.append(String(current))
+        }
+        return parts
+    }
+}
+
+/// Reassembles `clipboard_part` messages. A part out of order, a new
+/// transfer starting, or a total over `maximumBytes` discards the partial
+/// text, so a superseded or broken transfer never reaches the pasteboard.
+public struct ClipboardAssembler {
+    private var id: UUID?
+    private var count = 0
+    private var format = ClipboardFormat.text
+    private var parts: [String] = []
+    private var bytes = 0
+
+    public init() {}
+
+    /// `maximumBytes` limits the text, or the decoded image for `.png`.
+    public mutating func add(_ part: ClipboardPart, maximumBytes: Int) -> ClipboardContent? {
+        if part.index == 0 {
+            id = part.id
+            count = part.count
+            format = part.format
+            parts = []
+            bytes = 0
+        }
+        // A leftover part of an older, replaced transfer: ignore it.
+        guard part.id == id else { return nil }
+        guard part.count == count,
+              part.format == format,
+              part.count <= ProtocolV2.maximumClipboardParts,
+              part.index == parts.count
+        else {
+            reset()
+            return nil
+        }
+        bytes += part.text.utf8.count
+        let payloadLimit = format == .png ? (maximumBytes + 2) / 3 * 4 : maximumBytes
+        guard bytes <= payloadLimit else {
+            reset()
+            return nil
+        }
+        parts.append(part.text)
+        guard parts.count == count else { return nil }
+        let payload = parts.joined()
+        let completed = format
+        reset()
+        switch completed {
+        case .text:
+            return .text(payload)
+        case .png:
+            guard let data = Data(base64Encoded: payload), data.count <= maximumBytes else { return nil }
+            return .png(data)
+        }
+    }
+
+    public mutating func reset() {
+        id = nil
+        count = 0
+        format = .text
+        parts = []
+        bytes = 0
+    }
 }
 
 public enum ProtocolError: Error, Equatable, LocalizedError {
@@ -56,11 +178,30 @@ public struct InputSource: Codable, Equatable {
     public let display: String
     public let width: Int
     public let height: Int
+    /// Physical size of the source display, so Windows can move the pointer
+    /// the same physical distance the Mac pointer would have moved.
+    public let widthMm: Double?
+    public let heightMm: Double?
 
-    public init(display: String, width: Int, height: Int) {
+    public init(display: String, width: Int, height: Int, widthMm: Double? = nil, heightMm: Double? = nil) {
         self.display = display
         self.width = width
         self.height = height
+        self.widthMm = widthMm
+        self.heightMm = heightMm
+    }
+}
+
+/// The Windows display and pixel the pointer enters at, from the layout.
+public struct EnterTarget: Codable, Equatable {
+    public let display: String
+    public let x: Int
+    public let y: Int
+
+    public init(display: String, x: Int, y: Int) {
+        self.display = display
+        self.x = x
+        self.y = y
     }
 }
 
@@ -68,11 +209,29 @@ public struct EnterRequest: Codable, Equatable {
     public let id: UUID
     public let y: Double
     public let source: InputSource
+    public let target: EnterTarget?
 
-    public init(id: UUID, y: Double, source: InputSource) {
+    public init(id: UUID, y: Double, source: InputSource, target: EnterTarget? = nil) {
         self.id = id
         self.y = min(1, max(0, y))
         self.source = source
+        self.target = target
+    }
+}
+
+/// Where the pointer should reappear on the Mac, on the edge of `display`
+/// it returned through, in Quartz points.
+public struct ReturnPoint: Codable, Equatable {
+    public let display: String
+    public let edge: ScreenEdge
+    public let x: Double
+    public let y: Double
+
+    public init(display: String, edge: ScreenEdge, x: Double, y: Double) {
+        self.display = display
+        self.edge = edge
+        self.x = x
+        self.y = y
     }
 }
 
@@ -87,6 +246,8 @@ public enum NativeInputEvent: Equatable {
     case button(button: MouseButton, down: Bool)
     case scroll(horizontal: Int, vertical: Int)
     case key(vk: Int, down: Bool, extended: Bool)
+    /// Whole trackpad-pinch steps; positive zooms in (fingers apart).
+    case zoom(steps: Int)
 }
 
 extension NativeInputEvent: Codable {
@@ -100,6 +261,7 @@ extension NativeInputEvent: Codable {
         case vertical
         case vk
         case extended
+        case steps
     }
 
     public init(from decoder: Decoder) throws {
@@ -126,6 +288,8 @@ extension NativeInputEvent: Codable {
                 down: try container.decode(Bool.self, forKey: .down),
                 extended: try container.decodeIfPresent(Bool.self, forKey: .extended) ?? false
             )
+        case "zoom":
+            self = .zoom(steps: try container.decode(Int.self, forKey: .steps))
         default:
             throw ProtocolError.malformedMessage
         }
@@ -151,6 +315,9 @@ extension NativeInputEvent: Codable {
             try container.encode(vk, forKey: .vk)
             try container.encode(down, forKey: .down)
             try container.encode(extended, forKey: .extended)
+        case let .zoom(steps):
+            try container.encode("zoom", forKey: .kind)
+            try container.encode(steps, forKey: .steps)
         }
     }
 }
@@ -163,12 +330,18 @@ public enum ProtocolMessage: Equatable {
     case enterReject(id: UUID, reason: String)
     case input(NativeInputEvent)
     case command(name: String)
-    case returnRequest(id: UUID, y: Double)
+    case returnRequest(id: UUID, y: Double, mac: ReturnPoint?)
     case returnAck(id: UUID)
     case releaseAll(reason: String)
     case clipboard(origin: String, text: String)
     case ping(sentAtMs: Int64)
     case pong(sentAtMs: Int64)
+    /// Windows → Mac: the Windows displays and their physical sizes.
+    case displays([RemoteDisplay])
+    /// Mac → Windows: effective Windows display sizes and return zones.
+    case layout(LayoutUpdate)
+    /// Either direction: one slice of a clipboard text too big for one message.
+    case clipboardPart(ClipboardPart)
 }
 
 extension ProtocolMessage: Codable {
@@ -183,6 +356,13 @@ extension ProtocolMessage: Codable {
         case origin
         case text
         case sentAtMs
+        case target
+        case mac
+        case displays
+        case zones
+        case index
+        case count
+        case format
     }
 
     public init(from decoder: Decoder) throws {
@@ -192,7 +372,8 @@ extension ProtocolMessage: Codable {
             self = .enterRequest(EnterRequest(
                 id: try container.decode(UUID.self, forKey: .id),
                 y: try container.decode(Double.self, forKey: .y),
-                source: try container.decode(InputSource.self, forKey: .source)
+                source: try container.decode(InputSource.self, forKey: .source),
+                target: try container.decodeIfPresent(EnterTarget.self, forKey: .target)
             ))
         case "enter_ack":
             self = .enterAck(id: try container.decode(UUID.self, forKey: .id))
@@ -208,7 +389,8 @@ extension ProtocolMessage: Codable {
         case "return_request":
             self = .returnRequest(
                 id: try container.decode(UUID.self, forKey: .id),
-                y: try container.decode(Double.self, forKey: .y)
+                y: try container.decode(Double.self, forKey: .y),
+                mac: try container.decodeIfPresent(ReturnPoint.self, forKey: .mac)
             )
         case "return_ack":
             self = .returnAck(id: try container.decode(UUID.self, forKey: .id))
@@ -223,6 +405,22 @@ extension ProtocolMessage: Codable {
             self = .ping(sentAtMs: try container.decode(Int64.self, forKey: .sentAtMs))
         case "pong":
             self = .pong(sentAtMs: try container.decode(Int64.self, forKey: .sentAtMs))
+        case "displays":
+            self = .displays(try container.decode([RemoteDisplay].self, forKey: .displays))
+        case "layout":
+            self = .layout(LayoutUpdate(
+                displays: try container.decode([LayoutUpdate.DisplaySize].self, forKey: .displays),
+                zones: try container.decode([ReturnZone].self, forKey: .zones)
+            ))
+        case "clipboard_part":
+            self = .clipboardPart(ClipboardPart(
+                origin: try container.decode(String.self, forKey: .origin),
+                id: try container.decode(UUID.self, forKey: .id),
+                index: try container.decode(Int.self, forKey: .index),
+                count: try container.decode(Int.self, forKey: .count),
+                format: try container.decodeIfPresent(ClipboardFormat.self, forKey: .format) ?? .text,
+                text: try container.decode(String.self, forKey: .text)
+            ))
         default:
             throw ProtocolError.malformedMessage
         }
@@ -236,6 +434,7 @@ extension ProtocolMessage: Codable {
             try container.encode(request.id, forKey: .id)
             try container.encode(request.y, forKey: .y)
             try container.encode(request.source, forKey: .source)
+            try container.encodeIfPresent(request.target, forKey: .target)
         case let .enterAck(id):
             try container.encode("enter_ack", forKey: .type)
             try container.encode(id, forKey: .id)
@@ -249,10 +448,11 @@ extension ProtocolMessage: Codable {
         case let .command(name):
             try container.encode("command", forKey: .type)
             try container.encode(name, forKey: .name)
-        case let .returnRequest(id, y):
+        case let .returnRequest(id, y, mac):
             try container.encode("return_request", forKey: .type)
             try container.encode(id, forKey: .id)
             try container.encode(min(1, max(0, y)), forKey: .y)
+            try container.encodeIfPresent(mac, forKey: .mac)
         case let .returnAck(id):
             try container.encode("return_ack", forKey: .type)
             try container.encode(id, forKey: .id)
@@ -260,7 +460,7 @@ extension ProtocolMessage: Codable {
             try container.encode("release_all", forKey: .type)
             try container.encode(reason, forKey: .reason)
         case let .clipboard(origin, text):
-            guard text.lengthOfBytes(using: .utf8) <= ProtocolV2.maximumClipboardBytes else {
+            guard text.lengthOfBytes(using: .utf8) <= ProtocolV2.maximumClipboardMessageBytes else {
                 throw ProtocolError.frameTooLarge
             }
             try container.encode("clipboard", forKey: .type)
@@ -272,6 +472,26 @@ extension ProtocolMessage: Codable {
         case let .pong(sentAtMs):
             try container.encode("pong", forKey: .type)
             try container.encode(sentAtMs, forKey: .sentAtMs)
+        case let .displays(displays):
+            try container.encode("displays", forKey: .type)
+            try container.encode(displays, forKey: .displays)
+        case let .layout(update):
+            try container.encode("layout", forKey: .type)
+            try container.encode(update.displays, forKey: .displays)
+            try container.encode(update.zones, forKey: .zones)
+        case let .clipboardPart(part):
+            guard part.text.utf8.count <= ProtocolV2.maximumClipboardMessageBytes else {
+                throw ProtocolError.frameTooLarge
+            }
+            try container.encode("clipboard_part", forKey: .type)
+            try container.encode(part.origin, forKey: .origin)
+            try container.encode(part.id, forKey: .id)
+            try container.encode(part.index, forKey: .index)
+            try container.encode(part.count, forKey: .count)
+            if part.format != .text {
+                try container.encode(part.format, forKey: .format)
+            }
+            try container.encode(part.text, forKey: .text)
         }
     }
 }

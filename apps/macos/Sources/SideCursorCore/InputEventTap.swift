@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -15,6 +16,9 @@ public enum InputGateMode: Equatable {
 public struct InputGateSnapshot {
     public let mode: InputGateMode
     public let route: EdgeRoute?
+    /// Physical-layout handoff stretches. When non-empty they replace the
+    /// legacy single right-edge `route`.
+    public let entryZones: [EntryZone]
     public let handoffBlockedUntil: Date
     public let hotkeys: RemoteHotkeys
     public let scrollScale: Double
@@ -27,16 +31,24 @@ public final class InputGate {
     private let lock = NSLock()
     private var mode: InputGateMode = .local
     private var route: EdgeRoute?
+    private var entryZones: [EntryZone] = []
     private var handoffBlockedUntil = Date.distantPast
     private var hotkeys = RemoteHotkeys()
     private var scrollScale = 0.125
 
     public init() {}
 
-    public func update(phase: SessionPhase, route: EdgeRoute?, hotkeys: RemoteHotkeys, scrollScale: Double) {
+    public func update(
+        phase: SessionPhase,
+        route: EdgeRoute?,
+        entryZones: [EntryZone] = [],
+        hotkeys: RemoteHotkeys,
+        scrollScale: Double
+    ) {
         lock.lock()
         defer { lock.unlock() }
         self.route = route
+        self.entryZones = entryZones
         self.hotkeys = hotkeys
         self.scrollScale = max(0.02, min(1.0, scrollScale))
         switch phase {
@@ -61,6 +73,7 @@ public final class InputGate {
         return InputGateSnapshot(
             mode: mode,
             route: route,
+            entryZones: entryZones,
             handoffBlockedUntil: handoffBlockedUntil,
             hotkeys: hotkeys,
             scrollScale: scrollScale
@@ -227,6 +240,8 @@ public final class RemoteInputSink: @unchecked Sendable {
 
 public enum InputTapAction {
     case edgeCrossed(y: Double)
+    /// The pointer crossed a physical-layout handoff stretch at `point`.
+    case zoneCrossed(EntryZone, point: CGPoint)
     case input(NativeInputEvent)
     case command(String)
     case panicHotkey
@@ -283,16 +298,23 @@ public final class InputEventTap {
     /// Gesture event types are not exposed as named `CGEventType` cases, so
     /// they are referenced by their fixed CoreGraphics raw values.
     private static let gestureEventType = CGEventType(rawValue: 29)
-    /// Raw gesture fields: 113 = horizontal displacement, 119 = vertical
-    /// displacement, 132 = phase (1 began / 2 changed / 4 ended / 128 cancel),
-    /// 110 = gesture kind (6 = swipe, 32 = scroll).
-    private static let gestureXField = CGEventField(rawValue: 113)!
-    private static let gestureYField = CGEventField(rawValue: 119)!
-    private static let gestureStateField = CGEventField(rawValue: 132)!
+    /// Raw gesture field 110 is the gesture subtype. Zero marks the plain
+    /// touch-set events that carry the fingers currently on the trackpad;
+    /// scroll (6) and magnify gestures carry no touches.
     private static let gestureKindField = CGEventField(rawValue: 110)!
-    private static let swipeGestureKind: Int64 = 6
-    /// A swipe accumulates tens of pixels of displacement, far above this.
-    private static let gestureSwipeThreshold = 5.0
+    /// With macOS three-finger swipes turned off, a three-finger swipe is
+    /// delivered as ordinary scroll events, exactly like a two-finger scroll.
+    /// Only the number of fingers touching when the scroll begins tells them
+    /// apart, so scrolls that begin with this many fingers become commands.
+    private static let swipeFingerCount = 3
+    /// A deliberate swipe scrolls 20-40 lines; smaller totals are ignored.
+    private static let swipeMinimumLines = 6.0
+    /// Pinch arrives as magnify gestures (NSEvent type 30, or a type 29
+    /// gesture that AppKit decodes as magnify).
+    private static let magnifyEventType = CGEventType(rawValue: 30)
+    /// Accumulated pinch magnification that makes one Windows Ctrl+wheel
+    /// zoom step.
+    private static let zoomMagnificationPerStep = 0.15
     private let gate: InputGate
     private let actionHandler: (InputTapAction) -> Void
     private let actionQueue: DispatchQueue
@@ -301,18 +323,22 @@ public final class InputEventTap {
     private let commandForwarder: ((String) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    /// Gesture tracking so a swipe is decided from its whole lifetime rather
-    /// than a single (possibly noisy) "began" sample.
-    private var gestureActive = false
-    private var gestureIsSwipeKind = false
-    private var gestureLastDx = 0.0
-    private var gestureLastDy = 0.0
-    private var gestureMaxDx = 0.0
-    private var gestureMaxDy = 0.0
+    /// Fingers on the trackpad, from the latest touch-set gesture event.
+    private var touchCount = 0
+    /// A three-finger swipe in progress: its scroll events are withheld from
+    /// Windows and summed (in finger direction) until the fingers lift.
+    private var swipeActive = false
+    private var swipeFingerDx = 0.0
+    private var swipeFingerDy = 0.0
+    private var swipeDirectionInverted = true
+    /// Drops the momentum scroll that follows a swipe's lift-off.
+    private var suppressSwipeMomentum = false
     /// Fractional scroll remainder so slow scrolling still produces output
     /// notches (the configured scroll fraction is applied in `scaleScroll`).
     private var scrollRemainderH = 0.0
     private var scrollRemainderV = 0.0
+    /// Fractional pinch steps carried across magnify events.
+    private var zoomRemainder = 0.0
     /// True when macOS installed the tap as a filter (events can be
     /// suppressed).  A tap created before permission was granted is silently
     /// made listen-only, which lets local input leak during remote mode.
@@ -432,6 +458,12 @@ public final class InputEventTap {
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .mouseMoved,
+           event.getIntegerValueField(.eventSourceUserData) == CursorController.syntheticMoveTag {
+            // SideCursor's own return move: let it place the pointer.
+            lastMotionLocation = event.location
+            return Unmanaged.passUnretained(event)
+        }
         if type == .mouseMoved || type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged,
            let started = returnProbeStartedAt {
             returnProbeStartedAt = nil
@@ -474,12 +506,21 @@ public final class InputEventTap {
         if type == .keyDown || type == .keyUp || type == .flagsChanged {
             return handleKey(type, event: event, snapshot: snapshot)
         }
-        if type == Self.gestureEventType {
-            return handleGesture(event, snapshot: snapshot)
+        if type == Self.gestureEventType,
+           event.getIntegerValueField(Self.gestureKindField) == 0,
+           let touches = NSEvent(cgEvent: event)?.touches(matching: .touching, in: nil) {
+            touchCount = touches.count
         }
-        // Everything else includes the remaining gesture events (magnify,
-        // rotate) and other non-input events.  They are dropped while a remote
-        // session owns input so those actions never fire.
+        if snapshot.mode == .remote,
+           type == Self.gestureEventType || type == Self.magnifyEventType,
+           let magnify = NSEvent(cgEvent: event), magnify.type == .magnify {
+            handleMagnify(magnify)
+            return nil
+        }
+        // Everything else includes the remaining gesture events (touches,
+        // rotate, local-mode magnify) and other non-input events.  They are
+        // dropped while a remote session owns input so those actions never
+        // fire.
         switch snapshot.mode {
         case .remote, .entering, .returning, .recovering:
             return nil
@@ -488,55 +529,20 @@ public final class InputEventTap {
         }
     }
 
-    /// Three/four-finger trackpad swipes arrive as raw gesture (type 29)
-    /// events. A two-finger gesture is always accompanied by scroll-wheel
-    /// events; a three/four-finger swipe is not. The gesture's lifetime is
-    /// tracked, and a command is emitted at its end only if no scroll events
-    /// were seen and the accumulated displacement exceeds the swipe threshold.
-    private func handleGesture(_ event: CGEvent, snapshot: InputGateSnapshot) -> Unmanaged<CGEvent>? {
-        let state = event.getIntegerValueField(Self.gestureStateField)
-        let dx = event.getDoubleValueField(Self.gestureXField)
-        let dy = event.getDoubleValueField(Self.gestureYField)
-
-        switch state {
-        case 1: // began
-            gestureActive = true
-            gestureIsSwipeKind = event.getIntegerValueField(Self.gestureKindField) == Self.swipeGestureKind
-            gestureLastDx = dx
-            gestureLastDy = dy
-            gestureMaxDx = 0
-            gestureMaxDy = 0
-        case 2: // changed
-            guard gestureActive else { break }
-            gestureLastDx = dx
-            gestureLastDy = dy
-            gestureMaxDx = max(gestureMaxDx, abs(dx))
-            gestureMaxDy = max(gestureMaxDy, abs(dy))
-        case 4, 128: // ended / cancelled
-            let wasActive = gestureActive
-            gestureActive = false
-            guard wasActive, snapshot.mode == .remote else { break }
-            // Only a fast, predominantly horizontal swipe of the swipe kind
-            // produces a command: three-finger left/right switch desktops.
-            // Everything else (vertical motion, slow gestures, scrolling)
-            // stays local.
-            guard gestureIsSwipeKind else { break }
-            guard gestureMaxDx > gestureMaxDy, gestureMaxDx >= Self.gestureSwipeThreshold else { break }
-            if let command = MacVirtualKeyMapper.remoteGestureCommand(
-                deltaX: gestureLastDx,
-                hotkeys: snapshot.hotkeys
-            ) {
-                forwardCommand(command)
-            }
-        default:
-            break
+    /// Two-finger pinch becomes whole zoom steps, which Windows replays as
+    /// Ctrl+wheel. The remainder is carried across events so a slow pinch
+    /// still zooms, and discarded when a pinch starts or reverses.
+    private func handleMagnify(_ event: NSEvent) {
+        let magnification = event.magnification
+        if event.phase.contains(.began) || magnification == 0 || (magnification > 0) != (zoomRemainder > 0) {
+            zoomRemainder = 0
         }
-
-        switch snapshot.mode {
-        case .remote, .entering, .returning, .recovering:
-            return nil
-        case .local, .ready:
-            return Unmanaged.passUnretained(event)
+        let scaled = magnification / Self.zoomMagnificationPerStep + zoomRemainder
+        // Windows rejects more than 20 steps in one event as malformed.
+        let steps = max(-20, min(20, Int(scaled)))
+        zoomRemainder = scaled - Double(Int(scaled))
+        if steps != 0 {
+            forward(.zoom(steps: steps))
         }
     }
 
@@ -551,6 +557,26 @@ public final class InputEventTap {
             if dx != 0 || dy != 0 { forward(.pointer(dx: dx, dy: dy)) }
             return nil
         case .ready:
+            if !snapshot.entryZones.isEmpty {
+                if Date() >= snapshot.handoffBlockedUntil,
+                   let zone = snapshot.entryZones.first(where: {
+                       $0.crosses(location, previous: previousLocation, deltaX: Int64(dx), deltaY: Int64(dy))
+                   }) {
+                    emit(.zoneCrossed(zone, point: location))
+                } else if let zone = snapshot.entryZones.first(where: { $0.isNear(location) }),
+                          Date().timeIntervalSince(lastProbeAt) >= 1 {
+                    lastProbeAt = Date()
+                    emit(.handoffProbe(
+                        x: Double(location.x),
+                        y: Double(location.y),
+                        deltaX: Int64(zone.edge.runsAlongY ? dx : dy),
+                        previousX: previousLocation.map { Double(zone.edge.runsAlongY ? $0.x : $0.y) },
+                        minX: zone.start,
+                        maxX: zone.end
+                    ))
+                }
+                return Unmanaged.passUnretained(event)
+            }
             guard let route = snapshot.route else { return Unmanaged.passUnretained(event) }
             if Date() >= snapshot.handoffBlockedUntil,
                route.crossesFromInside(location, deltaX: Int64(dx), previous: previousLocation) {
@@ -594,6 +620,9 @@ public final class InputEventTap {
         case .remote:
             let vertical = Int(event.getIntegerValueField(.scrollWheelEventDeltaAxis1))
             let horizontal = Int(event.getIntegerValueField(.scrollWheelEventDeltaAxis2))
+            if handleSwipeScroll(event, horizontal: horizontal, vertical: vertical, snapshot: snapshot) {
+                return nil
+            }
             if vertical != 0 || horizontal != 0 {
                 let (outH, outV) = scaleScroll(horizontal: horizontal, vertical: vertical, sensitivity: snapshot.scrollScale)
                 if outH != 0 || outV != 0 {
@@ -606,6 +635,54 @@ public final class InputEventTap {
         case .local, .ready:
             return Unmanaged.passUnretained(event)
         }
+    }
+
+    /// Claims the scroll events of a three-finger swipe (and the momentum
+    /// after it) so they never reach Windows as scrolling, and emits the
+    /// swipe's command once the fingers lift. Returns true when claimed.
+    private func handleSwipeScroll(_ event: CGEvent, horizontal: Int, vertical: Int, snapshot: InputGateSnapshot) -> Bool {
+        let phase = event.getIntegerValueField(.scrollWheelEventScrollPhase)
+        let momentum = event.getIntegerValueField(.scrollWheelEventMomentumPhase)
+        if phase == 1 { // began
+            suppressSwipeMomentum = false
+            swipeActive = touchCount >= Self.swipeFingerCount
+            swipeFingerDx = 0
+            swipeFingerDy = 0
+            // Natural scrolling reports deltas in content direction; convert
+            // back to the direction the fingers moved.
+            swipeDirectionInverted = NSEvent(cgEvent: event)?.isDirectionInvertedFromDevice ?? true
+        } else if phase == 2, !swipeActive, touchCount >= Self.swipeFingerCount {
+            // A third finger that lands just after the scroll started.
+            swipeActive = true
+            swipeFingerDx = 0
+            swipeFingerDy = 0
+        }
+
+        if swipeActive {
+            let sign = swipeDirectionInverted ? 1.0 : -1.0
+            swipeFingerDx += Double(horizontal) * sign
+            swipeFingerDy += Double(vertical) * sign
+            if phase == 4 || phase == 128 { // ended / cancelled
+                swipeActive = false
+                suppressSwipeMomentum = true
+                if let command = MacVirtualKeyMapper.remoteGestureCommand(
+                    fingerDx: swipeFingerDx,
+                    fingerDy: swipeFingerDy,
+                    minimum: Self.swipeMinimumLines,
+                    hotkeys: snapshot.hotkeys
+                ) {
+                    forwardCommand(command)
+                }
+            }
+            return true
+        }
+        if suppressSwipeMomentum, phase == 0, momentum != 0 {
+            if momentum == 3 { suppressSwipeMomentum = false } // momentum ended
+            return true
+        }
+        // A cancel that trails a finished swipe (seen after its momentum
+        // starts) must not be forwarded as a scroll either.
+        return suppressSwipeMomentum && phase == 128
     }
 
     /// Scales the scroll deltas down by the configured fraction (default an
@@ -795,14 +872,25 @@ public enum MacVirtualKeyMapper {
         }
     }
 
-    /// Maps a horizontal three/four-finger swipe to a Windows desktop command.
-    /// The direction is deliberately inverted from the trackpad's own movement:
-    /// swiping left switches to the desktop on the right, and swiping right
-    /// switches to the desktop on the left. Only left and right are
-    /// gesture-driven; up/down remain keyboard-only.
-    public static func remoteGestureCommand(deltaX: Double, hotkeys: RemoteHotkeys) -> String? {
-        if deltaX < 0, hotkeys.desktopRightEnabled { return "desktop_right" }
-        if deltaX > 0, hotkeys.desktopLeftEnabled { return "desktop_left" }
-        return nil
+    /// Maps a three-finger swipe to a Windows command, from the total finger
+    /// movement in scroll lines (positive = right / down). The dominant axis
+    /// wins and must reach `minimum`. Up opens Task View and down shows the
+    /// desktop, as on a Windows touchpad. Horizontal is deliberately inverted
+    /// from the finger movement: swiping left switches to the desktop on the
+    /// right, and swiping right switches to the desktop on the left.
+    public static func remoteGestureCommand(
+        fingerDx: Double,
+        fingerDy: Double,
+        minimum: Double,
+        hotkeys: RemoteHotkeys
+    ) -> String? {
+        if abs(fingerDy) > abs(fingerDx) {
+            guard abs(fingerDy) >= minimum else { return nil }
+            if fingerDy < 0 { return hotkeys.taskViewEnabled ? "task_view" : nil }
+            return hotkeys.showDesktopEnabled ? "show_desktop" : nil
+        }
+        guard abs(fingerDx) >= minimum else { return nil }
+        if fingerDx < 0 { return hotkeys.desktopRightEnabled ? "desktop_right" : nil }
+        return hotkeys.desktopLeftEnabled ? "desktop_left" : nil
     }
 }

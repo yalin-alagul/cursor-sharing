@@ -68,23 +68,59 @@ from the wire header and never from the nonce.
 ## Messages
 
 ```json
-{"type":"enter_request","id":"uuid","y":0.5,"source":{"display":"stable-id","width":2048,"height":1152}}
+{"type":"enter_request","id":"uuid","y":0.5,"source":{"display":"stable-id","width":2048,"height":1152,"widthMm":287,"heightMm":179},"target":{"display":"windows-id","x":8,"y":576}}
 {"type":"enter_ack","id":"uuid"}
 {"type":"enter_reject","id":"uuid","reason":"target unavailable"}
 {"type":"input","event":{"kind":"pointer","dx":4,"dy":-2}}
 {"type":"input","event":{"kind":"button","button":"left","down":true}}
 {"type":"input","event":{"kind":"scroll","horizontal":0,"vertical":-1}}
 {"type":"input","event":{"kind":"key","vk":17,"down":true,"extended":false}}
+{"type":"input","event":{"kind":"zoom","steps":1}}
 {"type":"command","name":"desktop_left"}
-{"type":"return_request","id":"uuid","y":0.5}
+{"type":"return_request","id":"uuid","y":0.5,"mac":{"display":"stable-id","edge":"right","x":1440,"y":450}}
 {"type":"return_ack","id":"uuid"}
 {"type":"release_all","reason":"disconnect"}
 {"type":"clipboard","origin":"peer-uuid","text":"plain text"}
+{"type":"clipboard_part","origin":"peer-uuid","id":"uuid","index":0,"count":640,"text":"first 16 KiB"}
+{"type":"clipboard_part","origin":"peer-uuid","id":"uuid","index":0,"count":12,"format":"png","text":"iVBORw0KGgo…"}
 {"type":"ping","sentAtMs":0}
 {"type":"pong","sentAtMs":0}
+{"type":"displays","displays":[{"id":"windows-id","name":"DELL S2725QS","x":0,"y":0,"width":3840,"height":2160,"widthMm":597,"heightMm":336,"primary":true}]}
+{"type":"layout","displays":[{"id":"windows-id","widthMm":597,"heightMm":336}],"zones":[{"display":"windows-id","edge":"left","line":0,"start":505,"end":1656,"mac":{"display":"stable-id","edge":"right","line":1440,"start":0,"end":900}}]}
 ```
 
-Maximum clipboard text is 1 MiB and maximum encrypted frame is 2 MiB.  Mouse
+### Physical display layout
+
+Windows sends `displays` (pixels in its virtual desktop, sizes from EDID,
+zero when unknown) when a session starts and whenever its displays change.
+The Mac places those displays around its own in millimetres, from the user's
+arrangement, and replies with `layout`: the corrected Windows display sizes
+and one zone per stretch where a Windows edge physically touches a Mac edge.
+Along-edge coordinates increase the same way on both platforms, so a zone's
+Windows `start`/`end` (pixels) map linearly onto its `mac` `start`/`end`
+(points); `line` is each edge's coordinate.
+
+With a layout, `enter_request.target` names the Windows display and pixel the
+pointer physically arrives at, and `source.widthMm`/`heightMm` let Windows
+scale motion so it covers the same physical distance. The pointer then moves
+across every Windows display; leaving through a zone sends `return_request`
+with `mac`, the matching point on the Mac edge, and any other outer edge stops
+the pointer. Without `target` (older Macs), Windows uses its configured target
+display, `y`, and its left edge as before; without `displays` (older Windows),
+the Mac uses its configured source display's right edge.
+
+Maximum clipboard text is 10 MiB and maximum encrypted frame is 2 MiB. Text
+over 16 KiB is sent as ordered `clipboard_part` messages of at most 16 KiB
+(UTF-8, split only at character boundaries), sending each part after the
+previous one has been written so input keeps flowing between parts. The
+receiver joins them once all `count` parts of an `id` arrive; a gap, a new
+`id`, or a total over the limit discards the partial text. A single
+`clipboard` message stays at or under 1 MiB.
+
+Images travel only as `clipboard_part` messages with `"format":"png"`; the
+joined `text` is base64 of the PNG bytes and the 10 MiB limit applies to the
+decoded image. `format` defaults to `"text"`. When a copy offers both text and
+an image, text is sent; copied files are never sent.  Mouse
 motion may be coalesced; buttons, key transitions, mode transitions, and
 `release_all` are ordered and never discarded.
 
@@ -92,8 +128,9 @@ motion may be coalesced; buttons, key transitions, mode transitions, and
 
 - A Mac controller does not enter `Remote` until both `enter_ack` and local
   cursor capture succeed.
-- A Windows receiver sends `return_request` once when its configured left edge
-  is crossed, releases held input, and waits for `return_ack`.
+- A Windows receiver sends `return_request` once when the pointer leaves
+  through a return zone (or, without a layout, its configured left edge),
+  releases held input, and waits for `return_ack`.
 - Either peer sends `release_all` before closing a remote session.
 - Any transport, permission, display, or input-hook failure returns the Mac to
   local control immediately and releases Windows input.

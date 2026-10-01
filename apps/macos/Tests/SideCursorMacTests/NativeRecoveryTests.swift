@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import CryptoKit
 import Foundation
@@ -116,6 +117,188 @@ final class NativeRecoveryTests: XCTestCase {
         XCTAssertFalse(guardState.shouldForwardLocalText("from windows"))
         XCTAssertTrue(guardState.shouldForwardLocalText("new local text"))
         XCTAssertFalse(guardState.shouldForwardLocalText("new local text"))
+    }
+
+    func testThreeFingerSwipeMapsToWindowsCommands() {
+        let hotkeys = RemoteHotkeys()
+        func command(_ dx: Double, _ dy: Double) -> String? {
+            MacVirtualKeyMapper.remoteGestureCommand(fingerDx: dx, fingerDy: dy, minimum: 6, hotkeys: hotkeys)
+        }
+        XCTAssertEqual(command(1, -28), "task_view")
+        XCTAssertEqual(command(0, 40), "show_desktop")
+        // Horizontal stays inverted: swiping left shows the desktop on the right.
+        XCTAssertEqual(command(-28, 3), "desktop_right")
+        XCTAssertEqual(command(65, 4), "desktop_left")
+        XCTAssertNil(command(2, -4), "a small movement is not a swipe")
+    }
+
+    func testThreeFingerSwipeRespectsDisabledCommands() {
+        let hotkeys = RemoteHotkeys(taskViewEnabled: false, showDesktopEnabled: false)
+        XCTAssertNil(MacVirtualKeyMapper.remoteGestureCommand(fingerDx: 0, fingerDy: -30, minimum: 6, hotkeys: hotkeys))
+        XCTAssertNil(MacVirtualKeyMapper.remoteGestureCommand(fingerDx: 0, fingerDy: 30, minimum: 6, hotkeys: hotkeys))
+    }
+
+    func testLargeClipboardSplitsIntoValidPartsAndReassembles() throws {
+        // Multi-byte characters straddle the part boundary.
+        let text = String(repeating: "Yalın 🙂 ", count: 20_000)
+        let parts = ClipboardParts.split(text, maximumBytes: ProtocolV2.clipboardPartBytes)
+
+        XCTAssertGreaterThan(parts.count, 1)
+        XCTAssertTrue(parts.allSatisfy { $0.utf8.count <= ProtocolV2.clipboardPartBytes })
+        XCTAssertEqual(parts.joined(), text)
+
+        var assembler = ClipboardAssembler()
+        let id = UUID()
+        var result: ClipboardContent?
+        for (index, part) in parts.enumerated() {
+            result = assembler.add(
+                ClipboardPart(origin: "mac", id: id, index: index, count: parts.count, text: part),
+                maximumBytes: ProtocolV2.maximumClipboardBytes
+            )
+        }
+        XCTAssertEqual(result, .text(text))
+    }
+
+    func testImageTravelsAsBase64PartsAndDecodesToTheSamePNG() throws {
+        let png = try samplePNG(width: 400, height: 300)
+        let parts = ClipboardParts.split(png.base64EncodedString(), maximumBytes: ProtocolV2.clipboardPartBytes)
+        var assembler = ClipboardAssembler()
+        let id = UUID()
+        var result: ClipboardContent?
+        for (index, part) in parts.enumerated() {
+            result = assembler.add(
+                ClipboardPart(origin: "mac", id: id, index: index, count: parts.count, format: .png, text: part),
+                maximumBytes: png.count
+            )
+        }
+        XCTAssertEqual(result, .png(png))
+
+        // A mixed-format transfer is broken and never lands.
+        var mixed = ClipboardAssembler()
+        XCTAssertNil(mixed.add(ClipboardPart(origin: "w", id: id, index: 0, count: 2, format: .png, text: "iVBO"), maximumBytes: 100))
+        XCTAssertNil(mixed.add(ClipboardPart(origin: "w", id: id, index: 1, count: 2, format: .text, text: "Rw=="), maximumBytes: 100))
+
+        let encoded = try JSONEncoder().encode(ProtocolMessage.clipboardPart(ClipboardPart(origin: "m", id: id, index: 0, count: 1, format: .png, text: "iVBORw==")))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["format"] as? String, "png")
+    }
+
+    func testRemoteImageLandsOnThePasteboardAsPNGWithoutEcho() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidecursor-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        // Polled by hand below: a test runner's timers can lag by seconds.
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, pollInterval: 3600)
+        var forwarded: [ClipboardContent] = []
+        monitor.start { forwarded.append($0) }
+        defer { monitor.stop() }
+
+        let png = try samplePNG(width: 64, height: 48)
+        monitor.applyRemote(.png(png))
+        monitor.poll()
+
+        XCTAssertEqual(pasteboard.data(forType: .png), png)
+        XCTAssertEqual(NSImage(pasteboard: pasteboard)?.representations.first?.pixelsWide, 64, "apps reading NSImage get it")
+        XCTAssertTrue(forwarded.isEmpty, "a remote image must not bounce back")
+    }
+
+    func testLocalTIFFOnlyImageIsForwardedAsPNG() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidecursor-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        // Polled by hand below: a test runner's timers can lag by seconds.
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, pollInterval: 3600)
+        var forwarded: [ClipboardContent] = []
+        monitor.start { forwarded.append($0) }
+        defer { monitor.stop() }
+
+        let tiff = try XCTUnwrap(NSBitmapImageRep(data: try samplePNG(width: 32, height: 20))?.tiffRepresentation)
+        pasteboard.clearContents()
+        pasteboard.setData(tiff, forType: .tiff)
+        monitor.poll()
+        // Converting happens off the main thread, then lands on main.
+        let deadline = Date().addingTimeInterval(10)
+        while forwarded.isEmpty, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        guard case let .png(png)? = forwarded.first else { return XCTFail("expected a PNG, got \(forwarded)") }
+        XCTAssertEqual(NSBitmapImageRep(data: png)?.pixelsWide, 32)
+    }
+
+    func testCopiedFilesAreNotSentAsTheirIconImage() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("sidecursor-test-\(UUID().uuidString)"))
+        defer { pasteboard.releaseGlobally() }
+        // Polled by hand below: a test runner's timers can lag by seconds.
+        let monitor = ClipboardMonitor(pasteboard: pasteboard, pollInterval: 3600)
+        var forwarded: [ClipboardContent] = []
+        monitor.start { forwarded.append($0) }
+        defer { monitor.stop() }
+
+        let item = NSPasteboardItem()
+        item.setString(URL(fileURLWithPath: "/tmp/example.txt").absoluteString, forType: .fileURL)
+        item.setData(try samplePNG(width: 16, height: 16), forType: .png)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+        monitor.poll()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        XCTAssertTrue(forwarded.isEmpty)
+    }
+
+    /// A gradient with noise, so the PNG is big enough to need several parts.
+    private func samplePNG(width: Int, height: Int) throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let gradient = try XCTUnwrap(CGGradient(
+            colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: [CGColor(red: 1, green: 0.4, blue: 0.2, alpha: 1), CGColor(red: 0.2, green: 0.3, blue: 1, alpha: 1)] as CFArray,
+            locations: nil
+        ))
+        context.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: width, y: height), options: [])
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<(width * height / 8) {
+            context.setFillColor(CGColor(gray: .random(in: 0...1, using: &generator), alpha: 1))
+            context.fill(CGRect(x: Int.random(in: 0..<width, using: &generator), y: Int.random(in: 0..<height, using: &generator), width: 1, height: 1))
+        }
+        let image = try XCTUnwrap(context.makeImage())
+        return try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+    }
+
+    func testClipboardAssemblerDropsSupersededOrOversizedTransfers() {
+        var assembler = ClipboardAssembler()
+        let first = UUID()
+        func text(_ value: String) -> ClipboardContent { .text(value) }
+        let second = UUID()
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: first, index: 0, count: 2, text: "old "), maximumBytes: 100))
+        // A new copy starts before the old one finished: only the new one lands.
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: second, index: 0, count: 2, text: "new "), maximumBytes: 100))
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: first, index: 1, count: 2, text: "tail"), maximumBytes: 100))
+        XCTAssertEqual(assembler.add(ClipboardPart(origin: "w", id: second, index: 1, count: 2, text: "text"), maximumBytes: 100), text("new text"))
+
+        let third = UUID()
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: third, index: 0, count: 2, text: "12345"), maximumBytes: 8))
+        XCTAssertNil(assembler.add(ClipboardPart(origin: "w", id: third, index: 1, count: 2, text: "67890"), maximumBytes: 8))
+    }
+
+    func testClipboardPartMatchesSharedProtocolShape() throws {
+        let id = UUID()
+        let data = try JSONEncoder().encode(ProtocolMessage.clipboardPart(ClipboardPart(origin: "mac", id: id, index: 2, count: 5, text: "abc")))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["type"] as? String, "clipboard_part")
+        XCTAssertEqual(object["index"] as? Int, 2)
+        XCTAssertEqual(object["count"] as? Int, 5)
+        XCTAssertEqual(try JSONDecoder().decode(ProtocolMessage.self, from: data), .clipboardPart(ClipboardPart(origin: "mac", id: id, index: 2, count: 5, text: "abc")))
+    }
+
+    func testZoomInputEventMatchesSharedProtocolShape() throws {
+        let encoded = try JSONEncoder().encode(NativeInputEvent.zoom(steps: -2))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["kind"] as? String, "zoom")
+        XCTAssertEqual(object["steps"] as? Int, -2)
+
+        let decoded = try JSONDecoder().decode(NativeInputEvent.self, from: Data(#"{"kind":"zoom","steps":3}"#.utf8))
+        XCTAssertEqual(decoded, .zoom(steps: 3))
     }
 
     func testPairingCodeRoundTripsExactlyThirtyTwoBytes() throws {
@@ -462,4 +645,6 @@ private final class FakeCursorPlatform: CursorPlatform {
         warpedPoints.append(point)
         return warpResult
     }
+    var postedMoves: [CGPoint] = []
+    func postPointerMove(to point: CGPoint) { postedMoves.append(point) }
 }
