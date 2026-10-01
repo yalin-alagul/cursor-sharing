@@ -288,7 +288,7 @@ struct ConnectionPage: View {
                     }
                 } else {
                     LabeledContent("Windows Bluetooth address") {
-                        TextField("54:14:F3:78:6E:D6", text: model.binding(\.bluetoothPeerAddress))
+                        TextField("AA:BB:CC:DD:EE:FF", text: model.binding(\.bluetoothPeerAddress))
                             .labelsHidden()
                             .font(.system(.body, design: .monospaced))
                             .frame(width: 190)

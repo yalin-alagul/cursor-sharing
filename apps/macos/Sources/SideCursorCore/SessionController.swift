@@ -470,8 +470,8 @@ public final class SessionController: ObservableObject {
         }
         guard let address = BluetoothDeviceAddress.normalize(rawAddress) else {
             let detail = rawAddress.caseInsensitiveCompare(SideCursorBluetoothService.uuidString) == .orderedSame
-                ? "the SideCursor service UUID is not a device address; enter the paired Windows address such as 54:14:F3:78:6E:D6"
-                : "enter the paired Windows Bluetooth address in the form 54:14:F3:78:6E:D6"
+                ? "the SideCursor service UUID is not a device address; enter the paired Windows address such as AA:BB:CC:DD:EE:FF"
+                : "enter the paired Windows Bluetooth address in the form AA:BB:CC:DD:EE:FF"
             transportFailed(TransportError.bluetoothUnavailable(detail))
             return
         }

@@ -72,7 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--bluetooth-peer", metavar="MAC",
-        help="paired peer Bluetooth address, e.g. 54:14:F3:78:6E:D6",
+        help="paired peer Bluetooth address, e.g. AA:BB:CC:DD:EE:FF",
     )
     parser.add_argument(
         "--bluetooth-channel", type=int, default=11,

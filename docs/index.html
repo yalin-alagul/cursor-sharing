@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SideCursor for Mac and Windows</title>
+<meta name="description" content="Use one Mac keyboard, mouse and trackpad on a Windows PC. Move the pointer across the screen edge. Encrypted, direct, no account.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:title" content="SideCursor for Mac and Windows">
+<meta property="og:description" content="One keyboard, mouse and trackpad for your Mac and Windows PC. Encrypted, direct, no account.">
+<meta property="og:image" content="icon.png">
+<style>
+  :root {
+    --bg: #f7f7fc;
+    --surface: #ffffff;
+    --text: #14142a;
+    --muted: #585872;
+    --line: #e3e3f0;
+    --blue: #4f6df5;
+    --violet: #7642dc;
+    --green: #17a34a;
+    --code-bg: #eeeef7;
+    --warn: #a15c00;
+    --shadow: 0 1px 2px rgba(20, 20, 60, .06), 0 8px 24px rgba(20, 20, 60, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f0f1a; --surface: #181828; --text: #f0f0fa; --muted: #a6a6c0; --line: #2a2a40;
+      --code-bg: #20203a; --green: #4ade80; --warn: #ffb454; --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f0f1a; --surface: #181828; --text: #f0f0fa; --muted: #a6a6c0; --line: #2a2a40;
+    --code-bg: #20203a; --green: #4ade80; --warn: #ffb454; --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 16px; }
+  a { color: var(--blue); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) a { color: #9db0ff; } }
+  :focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; border-radius: 6px; }
+
+  header.hero { text-align: center; padding: 64px 0 40px; }
+  .hero img { width: 128px; height: 128px; filter: drop-shadow(0 12px 24px rgba(79, 70, 229, .35)); }
+  h1 { font-size: clamp(2.1rem, 6vw, 3.2rem); line-height: 1.1; margin: 20px 0 12px; letter-spacing: -.02em; }
+  .lede { font-size: clamp(1.05rem, 2.6vw, 1.25rem); color: var(--muted); max-width: 36em; margin: 0 auto 28px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 14px 24px; border-radius: 12px; font-weight: 600; text-decoration: none;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text) !important;
+  }
+  .btn.primary { background: linear-gradient(135deg, var(--blue), var(--violet)); color: #fff !important; border: 0; box-shadow: 0 8px 24px rgba(79, 70, 229, .35); }
+  .btn:hover { filter: brightness(1.06); }
+  .fine { color: var(--muted); font-size: .92rem; margin-top: 16px; }
+
+  section { padding: 36px 0; }
+  h2 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 24px; max-width: 40em; }
+
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; box-shadow: var(--shadow); }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .97rem; }
+  .num { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--violet)); color: #fff; font-weight: 700; font-size: .9rem; margin-bottom: 10px; }
+
+  ul.checks { list-style: none; padding: 0; margin: 0; }
+  ul.checks li { padding: 8px 0 8px 30px; position: relative; border-bottom: 1px solid var(--line); }
+  ul.checks li:last-child { border-bottom: 0; }
+  ul.checks li::before { content: ""; position: absolute; left: 4px; top: 16px; width: 12px; height: 12px; border-radius: 50%; background: var(--green); }
+
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 6px; }
+  pre { background: var(--code-bg); padding: 14px 16px; border-radius: 12px; overflow-x: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 12px 0; }
+  pre code { background: none; padding: 0; }
+
+  .note { border-left: 4px solid var(--warn); background: var(--surface); padding: 14px 18px; border-radius: 0 12px 12px 0; }
+  .note ul { margin: 8px 0 0; padding-left: 1.2em; }
+  .note strong { color: var(--warn); }
+
+  footer { border-top: 1px solid var(--line); margin-top: 24px; padding: 28px 0 56px; color: var(--muted); font-size: .92rem; text-align: center; }
+  footer a { margin: 0 8px; }
+
+  @media (max-width: 480px) { header.hero { padding-top: 44px; } body { font-size: 16px; } }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <img src="icon.png" alt="SideCursor app icon: a Mac screen and a larger Windows screen joined by a green edge, with a pointer crossing it" width="128" height="128">
+    <h1>SideCursor</h1>
+    <p class="lede">One keyboard, mouse and trackpad for your Mac and your Windows PC. Move the pointer off the edge of the Mac and it carries on across your Windows display. Encrypted, direct, no account.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/yalin-alagul/cursor-sharing/releases/latest/download/SideCursor-macOS.dmg">Download for Mac</a>
+      <a class="btn primary" href="https://github.com/yalin-alagul/cursor-sharing/releases/latest/download/SideCursor-Windows.zip">Download for Windows</a>
+      <a class="btn" href="https://github.com/yalin-alagul/cursor-sharing">View source</a>
+    </div>
+    <p class="fine">Free for noncommercial use &middot; Mac: Apple Silicon, macOS 13+ &middot; Windows: 64-bit Windows 10+</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section aria-labelledby="how">
+    <h2 id="how">How it works</h2>
+    <p class="sub">Install SideCursor on both computers. Your Mac keeps hold of the keyboard and mouse and passes them to Windows when the pointer crosses over.</p>
+    <div class="grid">
+      <div class="card"><span class="num">1</span><h3>Pair</h3><p>Generate a pairing code on the Mac and paste it into the Windows app. Both sides use it to prove who they are.</p></div>
+      <div class="card"><span class="num">2</span><h3>Arrange your displays</h3><p>Drag your Windows displays next to your Mac display, shown at real physical size. Shared edges turn green.</p></div>
+      <div class="card"><span class="num">3</span><h3>Cross the edge</h3><p>Move the pointer through a green edge to enter Windows, and back through one to return to the Mac.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="features">
+    <h2 id="features">What you get</h2>
+    <div class="grid">
+      <div class="card"><h3>Multi-monitor crossing</h3><p>The pointer leaves and enters at the same physical spot, even across several displays.</p></div>
+      <div class="card"><h3>Clipboard that follows you</h3><p>Copy text (up to 10 MB) or an image on one computer and paste it on the other.</p></div>
+      <div class="card"><h3>Trackpad gestures</h3><p>Three-finger swipes switch Windows desktops, open Task View or show the desktop. Pinch to zoom.</p></div>
+      <div class="card"><h3>Smooth and fast</h3><p>Unaccelerated 1:1 pointer movement, adjustable smoothing and scroll speed.</p></div>
+      <div class="card"><h3>A panic key</h3><p>Control + Option + F8 always stays on the Mac and takes control back at once.</p></div>
+      <div class="card"><h3>Two connections</h3><p>Direct over Tailscale, or a manual Bluetooth fallback when you have no network.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="security">
+    <h2 id="security">Built to be trusted with your keyboard</h2>
+    <p class="sub">A tool that types for you has to be careful about who is allowed to send input.</p>
+    <ul class="checks">
+      <li><strong>Authenticated and encrypted.</strong> A shared pairing secret, X25519 key agreement and ChaCha20-Poly1305, with replay rejection.</li>
+      <li><strong>Secrets stay in the system vault.</strong> The pairing secret lives in the macOS Keychain and Windows DPAPI, never on a command line or in a log.</li>
+      <li><strong>No account, no cloud.</strong> The two computers talk directly to each other.</li>
+      <li><strong>Always recoverable.</strong> A dropped connection, display change, lost permission or the panic key hands input back to the Mac and releases any held keys on Windows.</li>
+      <li><strong>Open protocol.</strong> The wire format and test vectors are in the repository for anyone to check.</li>
+    </ul>
+  </section>
+
+  <section id="install" aria-labelledby="install-h">
+    <h2 id="install-h">Install</h2>
+    <p class="sub">The apps are not yet signed with a developer certificate, so each operating system asks you to confirm once.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Mac</h3>
+        <p>Open the DMG and drag SideCursor into Applications. Right-click it, choose <strong>Open</strong>, then <strong>Open</strong> again. If macOS says it is damaged, run:</p>
+<pre><code>xattr -dr com.apple.quarantine /Applications/SideCursor.app</code></pre>
+        <p>Then allow <strong>Device Control and Data Access</strong> (Accessibility) in System Settings &rarr; Privacy &amp; Security.</p>
+      </div>
+      <div class="card">
+        <h3>Windows</h3>
+        <p>Extract the zip anywhere and run <code>SideCursor.Windows.exe</code>. If SmartScreen appears, choose <strong>More info</strong>, then <strong>Run anyway</strong>.</p>
+        <p>Install <a href="https://tailscale.com">Tailscale</a> on both computers for the direct route, then follow the first-run steps in the README.</p>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="limits">
+    <h2 id="limits">Good to know</h2>
+    <div class="note">
+      <strong>Current limits</strong>
+      <ul>
+        <li>Input is captured on the Mac and sent to Windows. It does not work the other way around.</li>
+        <li>The Mac app is built for Apple Silicon. Intel Macs can build it from source, but that is untested.</li>
+        <li>Because the Mac app is ad-hoc signed, macOS may ask you to grant permissions again after an update.</li>
+        <li>Bluetooth is a manual fallback, not an automatic one.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="license">
+    <h2 id="license">Free, for noncommercial use</h2>
+    <p>SideCursor is released under the <a href="https://github.com/yalin-alagul/cursor-sharing/blob/main/LICENSE">PolyForm Noncommercial License 1.0.0</a>. Personal, hobby, research and educational use are all fine. Commercial use is not permitted. The source is available, but this is not an OSI-approved open-source license.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/yalin-alagul/cursor-sharing">Source</a>
+    <a href="https://github.com/yalin-alagul/cursor-sharing/releases">All releases</a>
+    <a href="https://github.com/yalin-alagul/cursor-sharing/blob/main/SECURITY.md">Security</a>
+    <a href="https://github.com/yalin-alagul/cursor-sharing/issues">Report a problem</a>
+    <p>Copyright 2026 Yalin Alagul. This page loads no scripts, fonts or trackers.</p>
+  </div>
+</footer>
+</body>
+</html>
