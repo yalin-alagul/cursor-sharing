@@ -271,109 +271,10 @@ struct ConnectionPage: View {
     @State private var entersCode = false
 
     var body: some View {
-        let configuration = model.session.configuration
         Form {
-            Section {
-                Picker("Connect using", selection: model.binding(\.transport)) {
-                    ForEach(SideCursorCore.TransportKind.allCases) { transport in
-                        Text(transport.displayName).tag(transport)
-                    }
-                }
-                if configuration.transport == .tailscaleTCP {
-                    LabeledContent("Listening port") {
-                        TextField("Port", value: portBinding, format: .number.grouping(.never))
-                            .labelsHidden()
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 90)
-                    }
-                } else {
-                    LabeledContent("Windows Bluetooth address") {
-                        TextField("AA:BB:CC:DD:EE:FF", text: model.binding(\.bluetoothPeerAddress))
-                            .labelsHidden()
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 190)
-                    }
-                }
-                LabeledContent("Status") {
-                    StatusPill(title: model.statusTitle, color: model.statusColor)
-                }
-                HStack {
-                    Spacer()
-                    Button("Disconnect") { model.stopTransport() }
-                        .disabled(model.session.phase == .disconnected)
-                    Button("Reconnect") { model.restartTransport() }
-                        .keyboardShortcut(.defaultAction)
-                }
-            } header: {
-                Text("Connection")
-            } footer: {
-                Text(configuration.transport == .tailscaleTCP
-                    ? "Windows connects to this Mac over Tailscale."
-                    : "Pair both computers in Bluetooth settings first. Bluetooth is never chosen automatically.")
-            }
-
-            Section {
-                LabeledContent("Pairing code") {
-                    HStack(spacing: 8) {
-                        if model.pairingCode.isEmpty {
-                            Text("None yet").foregroundStyle(.secondary)
-                        } else {
-                            Text(revealsCode ? model.pairingCode : String(repeating: "•", count: 16))
-                                .font(.system(.body, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                            Button {
-                                revealsCode.toggle()
-                            } label: {
-                                Image(systemName: revealsCode ? "eye.slash" : "eye")
-                            }
-                            .buttonStyle(.borderless)
-                            .help(revealsCode ? "Hide code" : "Show code")
-                            Button {
-                                model.copyPairingCode()
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Copy code")
-                        }
-                    }
-                }
-                HStack {
-                    Button("Use Existing Code…") { entersCode = true }
-                    Spacer()
-                    Button(model.pairingCode.isEmpty ? "Create Code" : "Create New Code…") {
-                        if model.pairingCode.isEmpty {
-                            model.generatePairingCode()
-                        } else {
-                            confirmsNewCode = true
-                        }
-                    }
-                }
-            } header: {
-                Text("Pairing")
-            } footer: {
-                Text("Enter the same code in SideCursor on Windows. It's kept in your Keychain.")
-            }
-
-            Section {
-                Toggle("Share copied text and images with Windows", isOn: model.binding(\.clipboardEnabled))
-                    .toggleStyle(.switch)
-                Picker("Largest item", selection: model.binding(\.clipboardMaximumBytes)) {
-                    ForEach(
-                        options([64 * 1024, 256 * 1024, 1_048_576, 5 * 1_048_576, 10 * 1_048_576], including: configuration.clipboardMaximumBytes),
-                        id: \.self
-                    ) { bytes in
-                        Text(bytes >= 1_048_576 ? "\(bytes / 1_048_576) MB" : "\(bytes / 1024) KB").tag(bytes)
-                    }
-                }
-                .disabled(!configuration.clipboardEnabled)
-            } header: {
-                Text("Clipboard")
-            } footer: {
-                Text("Images travel as PNG. Copied files stay on the computer they were copied on.")
-            }
+            connectionSection
+            pairingSection
+            clipboardSection
         }
         .formStyle(.grouped)
         .alert("Create a new pairing code?", isPresented: $confirmsNewCode) {
@@ -384,6 +285,114 @@ struct ConnectionPage: View {
         }
         .sheet(isPresented: $entersCode) {
             PairingCodeSheet { code in model.savePairingCode(code) }
+        }
+    }
+
+    private var connectionSection: some View {
+        Section {
+            Picker("Connect using", selection: model.binding(\.transport)) {
+                ForEach(SideCursorCore.TransportKind.allCases) { transport in
+                    Text(transport.displayName).tag(transport)
+                }
+            }
+            if model.session.configuration.transport == .tailscaleTCP {
+                LabeledContent("Listening port") {
+                    TextField("Port", value: portBinding, format: .number.grouping(.never))
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 90)
+                }
+            } else {
+                LabeledContent("Windows Bluetooth address") {
+                    TextField("AA:BB:CC:DD:EE:FF", text: model.binding(\.bluetoothPeerAddress))
+                        .labelsHidden()
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 190)
+                }
+            }
+            LabeledContent("Status") {
+                StatusPill(title: model.statusTitle, color: model.statusColor)
+            }
+            HStack {
+                Spacer()
+                Button("Disconnect") { model.stopTransport() }
+                    .disabled(model.session.phase == .disconnected)
+                Button("Reconnect") { model.restartTransport() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        } header: {
+            Text("Connection")
+        } footer: {
+            Text(model.session.configuration.transport == .tailscaleTCP
+                ? "Windows connects to this Mac over Tailscale."
+                : "Pair both computers in Bluetooth settings first. Bluetooth is never chosen automatically.")
+        }
+    }
+
+    private var pairingSection: some View {
+        Section {
+            LabeledContent("Pairing code") {
+                HStack(spacing: 8) {
+                    if model.pairingCode.isEmpty {
+                        Text("None yet").foregroundStyle(.secondary)
+                    } else {
+                        Text(revealsCode ? model.pairingCode : String(repeating: "•", count: 16))
+                            .font(.system(.body, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        Button {
+                            revealsCode.toggle()
+                        } label: {
+                            Image(systemName: revealsCode ? "eye.slash" : "eye")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(revealsCode ? "Hide code" : "Show code")
+                        Button {
+                            model.copyPairingCode()
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy code")
+                    }
+                }
+            }
+            HStack {
+                Button("Use Existing Code…") { entersCode = true }
+                Spacer()
+                Button(model.pairingCode.isEmpty ? "Create Code" : "Create New Code…") {
+                    if model.pairingCode.isEmpty {
+                        model.generatePairingCode()
+                    } else {
+                        confirmsNewCode = true
+                    }
+                }
+            }
+        } header: {
+            Text("Pairing")
+        } footer: {
+            Text("Enter the same code in SideCursor on Windows. It's kept in your Keychain.")
+        }
+    }
+
+    private var clipboardSection: some View {
+        Section {
+            Toggle("Share copied text and images with Windows", isOn: model.binding(\.clipboardEnabled))
+                .toggleStyle(.switch)
+            Picker("Largest item", selection: model.binding(\.clipboardMaximumBytes)) {
+                ForEach(
+                    options([64 * 1024, 256 * 1024, 1_048_576, 5 * 1_048_576, 10 * 1_048_576], including: model.session.configuration.clipboardMaximumBytes),
+                    id: \.self
+                ) { bytes in
+                    Text(bytes >= 1_048_576 ? "\(bytes / 1_048_576) MB" : "\(bytes / 1024) KB").tag(bytes)
+                }
+            }
+            .disabled(!model.session.configuration.clipboardEnabled)
+        } header: {
+            Text("Clipboard")
+        } footer: {
+            Text("Images travel as PNG. Copied files stay on the computer they were copied on.")
         }
     }
 
