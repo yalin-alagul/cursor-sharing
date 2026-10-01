@@ -376,16 +376,32 @@ struct ConnectionPage: View {
         }
     }
 
+    private static let clipboardLimitPresets: [Int] = [
+        64 * 1024,
+        256 * 1024,
+        1_048_576,
+        5 * 1_048_576,
+        10 * 1_048_576,
+    ]
+
+    private var clipboardLimitChoices: [Int] {
+        options(Self.clipboardLimitPresets, including: model.session.configuration.clipboardMaximumBytes)
+    }
+
+    private static func clipboardLimitLabel(_ bytes: Int) -> String {
+        if bytes >= 1_048_576 {
+            return "\(bytes / 1_048_576) MB"
+        }
+        return "\(bytes / 1024) KB"
+    }
+
     private var clipboardSection: some View {
         Section {
             Toggle("Share copied text and images with Windows", isOn: model.binding(\.clipboardEnabled))
                 .toggleStyle(.switch)
             Picker("Largest item", selection: model.binding(\.clipboardMaximumBytes)) {
-                ForEach(
-                    options([64 * 1024, 256 * 1024, 1_048_576, 5 * 1_048_576, 10 * 1_048_576], including: model.session.configuration.clipboardMaximumBytes),
-                    id: \.self
-                ) { bytes in
-                    Text(bytes >= 1_048_576 ? "\(bytes / 1_048_576) MB" : "\(bytes / 1024) KB").tag(bytes)
+                ForEach(clipboardLimitChoices, id: \.self) { bytes in
+                    Text(Self.clipboardLimitLabel(bytes)).tag(bytes)
                 }
             }
             .disabled(!model.session.configuration.clipboardEnabled)
